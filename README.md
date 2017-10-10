@@ -9,9 +9,9 @@ Development goals (short term):
 
 Package goals (long term):
 -functions for data generation (random generation, symmetry groups, etc)
--interfacing with existing databases?
--prebuilt (included) testing data sets?
--interfacing with VASP and LAMMPS optional?
+*-interfacing with existing databases?
+*-prebuilt (included) testing data sets?
+*-interfacing with VASP and LAMMPS optional?
 
 Module 2 (Blue Team):
 Development goals (short term):
@@ -19,14 +19,16 @@ Development goals (short term):
 -examine AMP code
 
 Package goals (long term):
--calls to OpenBabel for reading structures?
 -multiple, user-selectable data representation schemes
 -output NN-formatted data, with transformations as necessary
+*-calls to OpenBabel for reading structures?
 
 Module 3 (Yellow Team):
 Development goals (short term):
-
+-learn Keras, TensorFlow
+-integrate NeuPy and scikit-learn
 
 Package goals (long term):
 -multiple, user-selectable neural networks
 -benchmarking for comparison?
+*-active learning functionality (network trains itself)?
