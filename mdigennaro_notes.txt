@@ -1,0 +1,5 @@
+Hyperparameters to optimize in the NN:
+1) number of hidden layers
+2) number of hidden neurons
+
+Hyperparameters to optimize in the symmetry function?
