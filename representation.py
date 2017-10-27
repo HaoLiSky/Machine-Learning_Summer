@@ -1,64 +1,99 @@
-import sys
+import sys, argparse
 import numpy as np
 from molml.atom import BehlerParrinello
 from scipy.spatial.distance import cdist
 from itertools import combinations
 
-'''
-usage:
->>>python representation.py data.npz 1500 output.csv [convert raw_data.xyz 55]
 
-Behler, J; Parrinello, M. Generalized Neural-Network Representation of
-High-Dimensional Potential-Energy Surfaces. Phys. Rev. Lett. 98, 146401.
-r_cut=6.0, cutoff radius (angstroms)
-r_s=1      pairwise distance offset (angstroms)
-eta=1      exponent term dampener
-lambda_=1  angular expansion switch +1 or -1
-zeta=1     angular expansion degree
-'''
-
-BP_DEFAULT = [6.0, 1, 1, 1, 1]
+BP_DEFAULT = [6.0,1.0,1.0,1.0,1.0]
 
 
-def convert_xyz(inputfile, outputfile, splitter, ignore=['energy:']):
-    with open(inputfile, 'r') as fil:
+def convert_xyz(xyzinputfile, splitter, ignore=['energy:']):
+    
+    """
+    Read in information from xyz file and store it in a numpy compressed zip file
+    
+    Parameters
+    ----------
+    xyzinputfile : xyz data filename
+    splitter : string used to distinguish between adjacent structure data in the xyz file
+               (the line that states the number of atoms?)
+          
+    Returns
+    -------
+    structures : list of structure data for each structure in xyz file
+    energies : list of energies corresponding to each structure
+    
+    """ 
+    
+    with open(xyzinputfile, 'r') as fil:
         text = fil.read()
         chunks = text.split('\n'+splitter+'\n')
 
     energies = [x.split()[0] for x in text.split('energy:')[1:]]
 
-    data = [list(filter(lambda x: (x and not x == splitter
-                                   and all([x.find(term) == -1
-                                           for term in ignore])),
+    data = [list(filter(lambda x: (x and not x == splitter and all([x.find(term) == -1 for term in ignore])),
                         x.split('\n'))) for x in chunks if x]
+    
+    structures = [[y.split() for y in x] for x in data]
 
-    structures = sorted([[y.split() for y in x] for x in data],
-                        key=lambda struct: struct[0])
-
-    # sorted by atom type
-    np.savez_compressed(outputfile, structures=structures, energies=energies)
+    return structures, energies
 
 
-def parser(structures, nmax):
+def parser(structures, Nmax):
+    
+    """
+    
+    Parameters
+    ----------
+    structures : list of structure data for each structure in xyz file
+    Nmax: maximum number of structures to be included in the representation portion\'s output
+          
+    Returns
+    -------
+    generator object (species,coords)
+    
+    """ 
+    
     i = 0
-    structure = structures[i]
-    species = [atom[0] for atom in structure]
-    coords = [[float(coord) for coord in atom[1:]] for atom in structure]
-    conversion = (species, coords)
-
-    while i < nmax:
-        yield conversion
+    while i < Nmax:
         structure = structures[i]
         species = [atom[0] for atom in structure]
         coords = [[float(coord) for coord in atom[1:]] for atom in structure]
-        conversion = (species, coords)
+        yield (species, coords)
         i += 1
 
+
 def represent(coords, elements, energy, parameters=BP_DEFAULT):
-    '''
-    coords := a list of coordinate triplets
-    elements := a list of strings
-    '''
+    
+    """
+    
+    Parameters
+    ----------
+    coords: list of [xyz] coords (in Angstroms)
+    elements: list of element name strings
+    energy: total energy of structure (in eV)
+    parameters: list of parameters for Behler-Parrinello symmetry functions
+        r_cut: cutoff radius (angstroms); default = 6.0
+        r_s: pairwise distance offset (angstroms); default = 1.0
+        eta: exponent term dampener; default = 1.0
+        lambda_: angular expansion switch +1 or -1; default = 1.0
+        zeta: angular expansion degree; default = 1.0
+          
+    Returns
+    -------
+    array of [g1_0, g2_0, g1_1, g2_1, ... , g1_n, g2_n, E] for n=number of atoms
+    
+    Notes
+    -----
+    Behler-Parrinello symmetry functions as described in:
+    Behler, J; Parrinello, M. Generalized Neural-Network Representation of
+    High-Dimensional Potential-Energy Surfaces. Phys. Rev. Lett. 98, 146401
+    Using the implementation in molML (https://pypi.python.org/pypi/molml/0.6.0)
+    ** correct the angular term in the g_2 function!! **
+    
+    """ 
+    
     r_cut, r_s, eta, lambda_, zeta = parameters
 
     bp = BehlerParrinello(r_cut=r_cut, r_s=r_s, eta=eta,
@@ -71,18 +106,38 @@ def represent(coords, elements, energy, parameters=BP_DEFAULT):
 
     return np.append(np.ravel(np.column_stack((g_1,g_2))), energy)
 
-    # format: [g1_0, g2_0, g1_1, g2_1, ... , g1_n, g2_n, E] for n=number of atoms
 
 if __name__ == '__main__':
-    arrayfile = sys.argv[1]
-    outputfile = sys.argv[2]
-    Nmax = sys.argv[3]
+    
+    
+    argparser = argparse.ArgumentParser(description='Converts structures to symmetry functions.')
+    argparser.add_argument('npz',
+                        help='filename for the numpy compressed zip produced by the convert option')
+    argparser.add_argument('Nmax',type=int,
+                        help='maximum number of structures to be included in the representation portion\'s output')
+    argparser.add_argument('output',
+                        help='filename for the representation portion\'s csv output (i.e. the neural network input)')
+    argparser.add_argument('-convert',action="store_true",
+                        help='keyword argument to start data conversion, which must be run if data.npz does not exist')
+    argparser.add_argument('-rawdata',
+                        help='filename for the original data in xya format')
+    argparser.add_argument('-separator',
+                        help='string used to distinguish between adjacent structure data in the xyz file')    
+   
+    ## read in the arguments from the command line
+    args = argparser.parse_args()
+    arrayfile = args.npz 
+    Nmax = args.Nmax
+    outputfile = args.output
 
-    if len(sys.argv) > 4 and sys.argv[4] == 'convert':
-        inputfile = sys.argv[5]
-        splitphrase = sys.argv[6]
-        convert_xyz(inputfile, arrayfile, splitphrase)
-
+    ## read in data from the xyz file and store it in a numpy compressed zip file
+    if len(sys.argv) > 4 and args.convert:
+        xyzinputfile = args.rawdata
+        splitphrase = args.separator
+        structures,energies = convert_xyz(xyzinputfile, splitphrase)
+        np.savez_compressed(arrayfile, structures=structures, energies=energies)
+    
+    ## extract arrays from the numpy compressed zip fileim[ort]
     arraydata = np.load(arrayfile)
     structures = arraydata['structures']
     energies = arraydata['energies']
@@ -90,6 +145,7 @@ if __name__ == '__main__':
     N = min(len(structures),len(energies), int(Nmax))
     print(('Total structures: '+str(N)).ljust(50))
 
+    ## convert structure coordinates into symmetry functions
     XYZ = parser(structures, N)
     j = 0
     with open(outputfile,'w') as fil:
@@ -104,3 +160,4 @@ if __name__ == '__main__':
                 j += 1
             except:
                 continue
+            
