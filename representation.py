@@ -6,7 +6,7 @@ from itertools import combinations
 
 '''
 usage:
->>>python representation.py data.npz output.csv [convert raw_data.xyz 55]
+>>>python representation.py data.npz 1500 output.csv [convert raw_data.xyz 55]
 
 Behler, J; Parrinello, M. Generalized Neural-Network Representation of
 High-Dimensional Potential-Energy Surfaces. Phys. Rev. Lett. 98, 146401.
@@ -42,15 +42,15 @@ def convert_xyz(inputfile, outputfile, splitter, ignore=['energy:']):
 def parser(structures, nmax):
     i = 0
     structure = structures[i]
-    species = [atom[0] for atom in structure[1:]]
-    coords = [[float(coord) for coord in atom] for atom in structure[1:]]
+    species = [atom[0] for atom in structure]
+    coords = [[float(coord) for coord in atom[1:]] for atom in structure]
     conversion = (species, coords)
 
     while i < nmax:
         yield conversion
         structure = structures[i]
-        species = [atom[0] for atom in structure[1:]]
-        coords = [[float(coord) for coord in atom] for atom in structure[1:]]
+        species = [atom[0] for atom in structure]
+        coords = [[float(coord) for coord in atom[1:]] for atom in structure]
         conversion = (species, coords)
         i += 1
 
@@ -78,7 +78,7 @@ if __name__ == '__main__':
     outputfile = sys.argv[2]
     Nmax = sys.argv[3]
 
-    if len(sys.argv > 4) and sys.argv[4] == 'convert':
+    if len(sys.argv) > 4 and sys.argv[4] == 'convert':
         inputfile = sys.argv[5]
         splitphrase = sys.argv[6]
         convert_xyz(inputfile, arrayfile, splitphrase)
@@ -92,7 +92,7 @@ if __name__ == '__main__':
 
     XYZ = parser(structures, N)
     j = 0
-    with open('output','w') as fil:
+    with open(outputfile,'w') as fil:
         for (elements, coords) in XYZ:
             print('processing '+str(j).rjust(10)+'/'+str(N),end='\r')
             sys.stdout.flush()
