@@ -1,6 +1,7 @@
-import sys, argparse
+import sys, argparse, time
 import numpy as np
-from molml.atom import BehlerParrinello
+#from molml.atom import BehlerParrinello
+from descriptors import BehlerParrinello
 from scipy.spatial.distance import cdist
 from itertools import combinations
 
@@ -96,13 +97,16 @@ def represent(coords, elements, energy, parameters=BP_DEFAULT):
     
     r_cut, r_s, eta, lambda_, zeta = parameters
 
-    bp = BehlerParrinello(r_cut=r_cut, r_s=r_s, eta=eta,
-                          lambda_=lambda_, zeta=zeta)
+    bp = BehlerParrinello(r_cut=r_cut, r_s=r_s, eta=eta, lambda_=lambda_, zeta=zeta)
     bp._elements = elements
     bp._element_pairs = set(combinations(elements,2))
+    cosTheta = bp.calculate_cosTheta(R_vecs = coords)  ## we do not have to recompute the angles for every different set of parameters
+    
+    ## here we can add loops over different sets of parameters, overwriting the default values that were used to initialize the class
+#    bp.r_cut,bp.r_s,bp.eta,bp.lambda_,bp.zeta = [6.0],[1.0],[1.0],[1.0],[1.0]
+#    for ...
     g_1 = bp.g_1(cdist(coords, coords), elements = elements)[:,0]
-    g_2 = bp.g_2(Theta = bp.calculate_Theta(R_vecs = coords), 
-                 R = cdist(coords, coords), elements = elements)
+    g_2 = bp.g_2(cosTheta = cosTheta, R = cdist(coords, coords), elements = elements)
 
     return np.append(np.ravel(np.column_stack((g_1,g_2))), energy)
 
@@ -120,7 +124,7 @@ if __name__ == '__main__':
     argparser.add_argument('-convert',action="store_true",
                         help='keyword argument to start data conversion, which must be run if data.npz does not exist')
     argparser.add_argument('-rawdata',
-                        help='filename for the original data in xya format')
+                        help='filename for the original data in xyz format')
     argparser.add_argument('-separator',
                         help='string used to distinguish between adjacent structure data in the xyz file')    
    
@@ -144,9 +148,11 @@ if __name__ == '__main__':
 
     N = min(len(structures),len(energies), int(Nmax))
     print(('Total structures: '+str(N)).ljust(50))
-
+    
     ## convert structure coordinates into symmetry functions
     XYZ = parser(structures, N)
+    
+#    t0 = time.time()
     j = 0
     with open(outputfile,'w') as fil:
         for (elements, coords) in XYZ:
@@ -159,5 +165,6 @@ if __name__ == '__main__':
                 fil.write(line)
                 j += 1
             except:
-                continue
+                continue            
+#    print (time.time()-t0)
             
