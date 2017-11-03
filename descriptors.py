@@ -145,7 +145,6 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         F_c_R = self.f_c(R)
 
         R2 = self.eta * R ** 2
-#        new_Theta = (1 - self.lambda_ * numpy.cos(cosTheta)) ** self.zeta
         new_Theta = (1 - self.lambda_ * cosTheta) ** self.zeta
 
         get_index, length, _ = get_index_mapping(self._element_pairs,2,False)
@@ -154,35 +153,26 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         values = numpy.zeros((n, length))
         for i in range(n):
             for j in range(n):
-                if not F_c_R[i, j] or i == j:
-                #if i == j or not F_c_R[i, j]:
+                if not F_c_R[i,j] or i == j:
                     continue
                 ele1 = elements[j]
 
                 for k in range(n):
-                    if k <= j or not F_c_R[i, k] or not F_c_R[j, k] or k == i:
+                    if k <= j or not F_c_R[i,k] or not F_c_R[j,k] or k == i:
                         continue
-                    #if k == i or j == k:
-                    #    continue
-                    #if not F_c_R[i, k] or not F_c_R[j, k]:
-                    #    continue
                     ele2 = elements[k]
                     eles = ele1, ele2
 
-                    exp_term = numpy.exp(-(R2[i, j] + R2[i, k] + R2[j, k]))
-                    angular_term = new_Theta[i, j, k]
-                    radial_cuts = F_c_R[i, j] * F_c_R[i, k] * F_c_R[j, k]
-                    temp = angular_term * exp_term * radial_cuts
+                    temp = new_Theta[i,j,k] * numpy.exp(-(R2[i,j] + R2[i,k] + R2[j,k])) * F_c_R[i,j] * F_c_R[i,k] * F_c_R[j,k]
                     try:
                         values[i, get_index(eles)] += 2*temp
-#                        values[i, get_index(eles)] += temp
                     except KeyError:
                         pass
                     
         return 2 ** (1 - self.zeta) * values
 
 
-    def calculate_cosTheta(self, R_vecs):
+    def calculate_cosTheta(self, coords, R):
         
         """
         Compute the angular term for all triples of atoms:
@@ -194,8 +184,11 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Parameters
         ----------
-        R_vecs : array, shape=(N_atoms, 3)
+        coords : array, shape=(N_atoms, 3)
             An array of the Cartesian coordinates of all the atoms
+        
+        R : array, shape=(N_atoms, N_atoms)
+            A distance matrix for all the atoms (scipy.spatial.cdist).
 
         Returns
         -------
@@ -205,22 +198,20 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         """
         
 #        t0 = time.time()
-        n = R_vecs.shape[0]
-        Theta = numpy.zeros((n, n, n))
-        for i, Ri in enumerate(R_vecs):
-            for j, Rj in enumerate(R_vecs):
+        n = coords.shape[0]
+        cosTheta = numpy.zeros((n, n, n))
+        for i, Ri in enumerate(coords):
+            for j, Rj in enumerate(coords):
                 if i == j:
                     continue
                 Rij = Ri - Rj
-                normRij = numpy.linalg.norm(Rij)
-                for k, Rk in enumerate(R_vecs):
+                for k, Rk in enumerate(coords):
                     if j <= k or i == k:
                         continue
                     Rik = Ri - Rk
-                    normRik = numpy.linalg.norm(Rik)
-                    cosTheta = numpy.dot(Rij, Rik) / (normRij * normRik)
-                    Theta[i, j, k] = cosTheta
-                    Theta[i, k, j] = cosTheta
+                    cosTheta_ijk = numpy.dot(Rij, Rik) / (R[i,j] * R[i,k])
+                    cosTheta[i,j,k] = cosTheta_ijk 
+                    cosTheta[i,k,j] = cosTheta_ijk 
 #        print ("calc theta time: ",time.time()-t0)            
-        return Theta
+        return cosTheta
 

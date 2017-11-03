@@ -100,13 +100,16 @@ def represent(coords, elements, energy, parameters=BP_DEFAULT):
     bp = BehlerParrinello(r_cut=r_cut, r_s=r_s, eta=eta, lambda_=lambda_, zeta=zeta)
     bp._elements = elements
     bp._element_pairs = set(combinations(elements,2))
-    cosTheta = bp.calculate_cosTheta(R_vecs = coords)  ## we do not have to recompute the angles for every different set of parameters
+    
+    ## we do not have to recompute the distances and angles for every different set of parameters
+    distmatrix = cdist(coords, coords)
+    cosTheta = bp.calculate_cosTheta(coords, distmatrix)
     
     ## here we can add loops over different sets of parameters, overwriting the default values that were used to initialize the class
 #    bp.r_cut,bp.r_s,bp.eta,bp.lambda_,bp.zeta = [6.0],[1.0],[1.0],[1.0],[1.0]
 #    for ...
-    g_1 = bp.g_1(cdist(coords, coords), elements = elements)[:,0]
-    g_2 = bp.g_2(cosTheta = cosTheta, R = cdist(coords, coords), elements = elements)
+    g_1 = bp.g_1(R = distmatrix, elements = elements)[:,0]
+    g_2 = bp.g_2(cosTheta = cosTheta, R = distmatrix, elements = elements)    
 
     return np.append(np.ravel(np.column_stack((g_1,g_2))), energy)
 
@@ -152,7 +155,7 @@ if __name__ == '__main__':
     ## convert structure coordinates into symmetry functions
     XYZ = parser(structures, N)
     
-#    t0 = time.time()
+    t0 = time.time()
     j = 0
     with open(outputfile,'w') as fil:
         for (elements, coords) in XYZ:
@@ -166,5 +169,5 @@ if __name__ == '__main__':
                 j += 1
             except:
                 continue            
-#    print (time.time()-t0)
+    print (time.time()-t0)
             
