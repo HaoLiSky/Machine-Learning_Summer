@@ -155,6 +155,55 @@ if __name__ == '__main__':
     ## convert structure coordinates into symmetry functions
     XYZ = parser(structures, N)
     
+    '''
+    species_all = [['A']*random.randint(7)+['B']*random.randint(4)+['C']*random.randint(15) for x in range(100)]
+#species_all = list of lists of species for each structure
+coords_all = [[random.rand(3) for i in struct] for struct in species_all]
+#coords_all = list of lists of coordinate triples for each structure
+species_set = sorted(set(np.concatenate(species_all))) #alphabetical
+species_counts = np.asarray([[cstruct.count(cspecie) for cspecie in species_set]
+                    for cstruct in species_all])
+counts_max = np.amax(counts, axis=0)
+
+
+def represent(coords):
+    N_sets_temp = 50
+    return [sum(coords)*parameter for parameter in range(N_sets_temp)]
+
+def pad(data, sects_i, sects_f):
+    
+    #data = list of descriptors for one structure
+    #sects_i = list of initial lengths of chunks
+    #   i.e. # of atoms for each specie in structure
+    #sects_f = list of final lengths of chunks
+    #   i.e. max # of atoms for each specie in system
+    #returns data padded with 0 matching the template
+    
+    columns = np.shape(data)[1] #length of each descriptor
+    rows_f = sum(sects_f)
+    
+    n = len(sects_i) #number of sections
+    slice_pos = [sum(sects_i[:i+1]) for i in range(n-1)]
+    #row indices to slice to create n sections of sects_i length
+    data_sliced = np.split(data, slice_pos)
+    
+    start_pos = [sum(sects_f[:i]) for i in range(n)]
+    #row indices to place chunks of sects_f length
+    
+    data_f = np.zeros((rows_f, columns))
+    for sect, start in zip(data_sliced, start_pos):
+        end = start+len(sect)
+        data_f[start:end, :] = sect
+
+    return data_f
+
+descriptors_temp = [pad([represent(coords) for coords in coords_list],
+                         species_count, counts_max)
+                    for species_count, coords_list in zip(species_counts, coords_all)]
+
+#returns an array (S x N x K), where S = total structures, N = max atoms, K = # descriptors
+    '''
+    
     t0 = time.time()
     j = 0
     with open(outputfile,'w') as fil:
