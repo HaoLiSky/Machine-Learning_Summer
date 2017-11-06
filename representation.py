@@ -65,7 +65,7 @@ def parser(structures, Nmax):
         i += 1
 
 
-def represent(coords, elements, energy, parameters=BP_DEFAULT):
+def represent(coords, elements, parameters=BP_DEFAULT):
     
     """
     
@@ -111,43 +111,144 @@ def represent(coords, elements, energy, parameters=BP_DEFAULT):
     g_1 = bp.g_1(R = distmatrix, elements = elements)[:,0]
     g_2 = bp.g_2(cosTheta = cosTheta, R = distmatrix, elements = elements)    
 
-    return np.append(np.ravel(np.column_stack((g_1,g_2))), energy)
+    n = len(g_1)  #TEMP
+    k = 2  #TEMP
+    return np.asarray([g_1,g_2]).reshape(n,k)
+
+
+def pad(data, sects_i, sects_f):
+    # data = list of descriptors for one structure
+    # sects_i = list of initial lengths of chunks
+    #   i.e. # of atoms for each specie in structure
+    # sects_f = list of final lengths of chunks
+    #   i.e. max # of atoms for each specie in system
+    # returns data padded with 0 matching the template
+
+    columns = np.shape(data)[1]  # length of each descriptor
+    rows_f = sum(sects_f)
+
+    n = len(sects_i)  # number of sections
+    slice_pos = [sum(sects_i[:i + 1]) for i in range(n - 1)]
+    # row indices to slice to create n sections of sects_i length
+    data_sliced = np.split(data, slice_pos)
+
+    start_pos = [sum(sects_f[:i]) for i in range(n)]
+    # row indices to place chunks of sects_f length
+
+    data_f = np.zeros((rows_f, columns))
+    for sect, start in zip(data_sliced, start_pos):
+        end = start + len(sect)
+        data_f[start:end, :] = sect
+
+    return data_f
 
 
 if __name__ == '__main__':
-    
+
+
+    """
+    Usage:
+    [parse|convert] input output [-n nmax] [-istart index]
+    [-e energy_file]  [-ignore ...]
+    """
     
     argparser = argparse.ArgumentParser(description='Converts structures to symmetry functions.')
-    argparser.add_argument('npz',
-                        help='filename for the numpy compressed zip produced by the convert option')
-    argparser.add_argument('Nmax',type=int,
-                        help='maximum number of structures to be included in the representation portion\'s output')
+    argparser.add_argument('action', choices=['represent','parse'])
+    argparser.add_argument('input',
+                           help='.npz for representation or .xyz for \
+                                parsing (directory if -loose)')
     argparser.add_argument('output',
-                        help='filename for the representation portion\'s csv output (i.e. the neural network input)')
-    argparser.add_argument('-convert',action="store_true",
-                        help='keyword argument to start data conversion, which must be run if data.npz does not exist')
-    argparser.add_argument('-rawdata',
-                        help='filename for the original data in xyz format')
-    argparser.add_argument('-separator',
-                        help='string used to distinguish between adjacent structure data in the xyz file')    
-   
+                           help='.csv for representation or .npz for parsing')
+    argparser.add_argument('-n','--Nmax',type=int,
+                           help='maximum number of structures to be parsed')
+    argparser.add_argument('--istart',type=int,
+                           help='index to begin representation/parsing (\
+                                 def 0)')
+    argparser.add_argument('--iskip',type=int,
+                           help='indices to skip between actions (def 0)')
+    argparser.add_argument('-l','--loose',action="store_true",
+                           help='parse loose .xyz files in input directory')
+    argparser.add_argument('-p', '--propertyinput',
+                           help='filename for property data to parse \
+                                if separate from .xyz')
+    argparser.add_argument('--ignore',action='append',
+                           help='when parsing .xyz, ignore any lines \
+                                 containing ignore string(s)')
+    argparser.add_argument('--descriptor', choices=['BP'],
+                           help='method of representing data')
     ## read in the arguments from the command line
     args = argparser.parse_args()
-    arrayfile = args.npz 
-    Nmax = args.Nmax
-    outputfile = args.output
 
-    ## read in data from the xyz file and store it in a numpy compressed zip file
-    if len(sys.argv) > 4 and args.convert:
-        xyzinputfile = args.rawdata
-        splitphrase = args.separator
-        structures,energies = convert_xyz(xyzinputfile, splitphrase)
+    represent = (args.action == 'represent')
+    inputfile = args.input
+    outputfile = args.output
+    Nmax = args.Nmax
+    istart = args.istart
+    iskip = args.iskip
+    loose = args.loose
+    propertyfile = args.propertyinput
+    ignore = args.ignore
+
+    if represent:
+        indata, outdata = readnpz(inputfile,Nmax,istart,iskip) #slice as needed
+        species_all = get_species(indata)
+        coords_all = get_coords(indata)
+        species_set = sorted(set(np.concatenate(species_all)))  # alphabetical
+        species_counts = np.asarray([[cstruct.count(cspecie)
+                                      for cspecie in species_set]
+                                    for cstruct in species_all])
+        counts_max = np.amax(species_counts, axis=0)
+
+        for species_count, elements, coords_list in zip(species_counts, species_all, coords_all):
+            print('processing ' + str(j).rjust(10) + '/' + str(N), end='\r')
+            sys.stdout.flush()
+            try:
+                data = pad(represent(coords_list, elements),
+                           species_count, counts_max)
+
+                #line = ','.join(data) + '\n'
+                #fil.write(line)
+                j += 1
+            except:
+                continue
+        print(time.time() - t0)
+
+        represent_data =
+        descriptors_temp = [pad([represent(coords_list),
+                                 species_count, counts_max)
+                            for species_count, coords_list in
+                            zip(species_counts, coords_all)]
+
+    else:  #parse data
+        if loose:
+            separate_parsexyz(inputfile,Nmax,istart,iskip,ignore)
+        else:
+            together_parsexyz(inputfile,Nmax,istart,iskip,ignore)
+
+        if propertyfile:
+            parse_property(propertyfile,Nmax,istart,iskip)
+        else:
+            parse_property(inputfile,Nmax,istart,iskip)
+
+        writestuff(outputfile)
+
+
+    ## read in data from the xyz file(s) and store it in a numpy compressed zip file
+
+
+    '''
+    if convert:
+        if propertyinput:
+            properties = get_properties(propertyinput)
+            structures = convert_xyz(inputfile)
+        else:
+            structures,energies = convert_xyz(inputfile, splitphrase)
         np.savez_compressed(arrayfile, structures=structures, energies=energies)
-    
+    else:
     ## extract arrays from the numpy compressed zip fileim[ort]
-    arraydata = np.load(arrayfile)
-    structures = arraydata['structures']
-    energies = arraydata['energies']
+        arraydata = np.load(inputfile)
+        structures = arraydata['structures']
+        energies = arraydata['energies']
 
     N = min(len(structures),len(energies), int(Nmax))
     print(('Total structures: '+str(N)).ljust(50))
@@ -155,59 +256,11 @@ if __name__ == '__main__':
     ## convert structure coordinates into symmetry functions
     XYZ = parser(structures, N)
     
-    '''
-    species_all = [['A']*random.randint(7)+['B']*random.randint(4)+['C']*random.randint(15) for x in range(100)]
-#species_all = list of lists of species for each structure
-coords_all = [[random.rand(3) for i in struct] for struct in species_all]
-#coords_all = list of lists of coordinate triples for each structure
-species_set = sorted(set(np.concatenate(species_all))) #alphabetical
-species_counts = np.asarray([[cstruct.count(cspecie) for cspecie in species_set]
-                    for cstruct in species_all])
-counts_max = np.amax(counts, axis=0)
 
-
-def represent(coords):
-    N_sets_temp = 50
-    return [sum(coords)*parameter for parameter in range(N_sets_temp)]
-
-def pad(data, sects_i, sects_f):
-    
-    #data = list of descriptors for one structure
-    #sects_i = list of initial lengths of chunks
-    #   i.e. # of atoms for each specie in structure
-    #sects_f = list of final lengths of chunks
-    #   i.e. max # of atoms for each specie in system
-    #returns data padded with 0 matching the template
-    
-    columns = np.shape(data)[1] #length of each descriptor
-    rows_f = sum(sects_f)
-    
-    n = len(sects_i) #number of sections
-    slice_pos = [sum(sects_i[:i+1]) for i in range(n-1)]
-    #row indices to slice to create n sections of sects_i length
-    data_sliced = np.split(data, slice_pos)
-    
-    start_pos = [sum(sects_f[:i]) for i in range(n)]
-    #row indices to place chunks of sects_f length
-    
-    data_f = np.zeros((rows_f, columns))
-    for sect, start in zip(data_sliced, start_pos):
-        end = start+len(sect)
-        data_f[start:end, :] = sect
-
-    return data_f
-
-descriptors_temp = [pad([represent(coords) for coords in coords_list],
-                         species_count, counts_max)
-                    for species_count, coords_list in zip(species_counts, coords_all)]
-
-#returns an array (S x N x K), where S = total structures, N = max atoms, K = # descriptors
-    '''
-    
     t0 = time.time()
     j = 0
     with open(outputfile,'w') as fil:
-        for (elements, coords) in XYZ:
+        for (elements, coords) in XYZ:  # per structure
             print('processing '+str(j).rjust(10)+'/'+str(N),end='\r')
             sys.stdout.flush()
             try:
@@ -219,4 +272,4 @@ descriptors_temp = [pad([represent(coords) for coords in coords_list],
             except:
                 continue            
     print (time.time()-t0)
-            
+    '''
