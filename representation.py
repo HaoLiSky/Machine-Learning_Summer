@@ -65,9 +65,40 @@ def parser(structures, Nmax):
         i += 1
 
 
+def read_BP_parameters(BPparafile):
+    
+    """
+    Read in Behler-Parrinello parameter sets from BPparafile
+    
+    Parameters
+    ----------
+    BPparafile : BP parameters filename
+          
+    Returns
+    -------
+    pairs : list of parameters for generating pair functions (i.e. g_1)
+    triplets : list of parameters for generating triplet functions (i.e. g_2)
+    
+    """ 
+    
+    with open(BPparafile, 'r') as fil:
+        lines = fil.read().splitlines()
+
+    pairs,triplets = [],[]
+    for line in lines:
+        entries = line.split()
+        if entries[0][0] == 'p': pairs.append([float(para) for para in entries[1:]])
+        elif entries[0][0] == 't': triplets.append([float(para) for para in entries[1:]])
+        else: raise ValueError('invalid keyword!')
+
+    return pairs,triplets
+
+
 def represent(coords, elements, parameters=BP_DEFAULT):
     
     """
+    computes the atom-based descriptors for each atom in a given structure
+    !! this implementation is for clusters (non-periodic) only !!
     
     Parameters
     ----------
@@ -83,37 +114,40 @@ def represent(coords, elements, parameters=BP_DEFAULT):
           
     Returns
     -------
-    array of [g1_0, g2_0, g1_1, g2_1, ... , g1_n, g2_n, E] for n=number of atoms
+    array of [[g1, g1, g1, ...., g2, g2, g2, ...] for each atom]
+    the size of the array is (#atoms rows)*(#descriptors columns)
     
     Notes
     -----
     Behler-Parrinello symmetry functions as described in:
     Behler, J; Parrinello, M. Generalized Neural-Network Representation of
     High-Dimensional Potential-Energy Surfaces. Phys. Rev. Lett. 98, 146401
-    Using the implementation in molML (https://pypi.python.org/pypi/molml/0.6.0)
-    ** correct the angular term in the g_2 function!! **
     
     """ 
-    
-    r_cut, r_s, eta, lambda_, zeta = parameters
 
-    bp = BehlerParrinello(r_cut=r_cut, r_s=r_s, eta=eta, lambda_=lambda_, zeta=zeta)
+    para_pairs,para_triplets = parameters
+    
+    bp = BehlerParrinello()
     bp._elements = elements
     bp._element_pairs = set(combinations(elements,2))
     
-    ## we do not have to recompute the distances and angles for every different set of parameters
+    ## we only compute the distances and angles once for every structure
     distmatrix = cdist(coords, coords)
     cosTheta = bp.calculate_cosTheta(coords, distmatrix)
     
-    ## here we can add loops over different sets of parameters, overwriting the default values that were used to initialize the class
-#    bp.r_cut,bp.r_s,bp.eta,bp.lambda_,bp.zeta = [6.0],[1.0],[1.0],[1.0],[1.0]
-#    for ...
-    g_1 = bp.g_1(R = distmatrix, elements = elements)[:,0]
-    g_2 = bp.g_2(cosTheta = cosTheta, R = distmatrix, elements = elements)    
+    ## loops over different sets of parameters, overwriting the values that were used to initialize the class
+    ## currrently this is hardcoded for single element systems!!
+    g_1 = []
+    for para in para_pairs:
+        r_cut, r_s, eta, lambda_, zeta = para 
+        g_1.append(bp.g_1(R = distmatrix, elements = elements)[:,0]) ## each row of g_1 corresponds to a different set of parameters
+        
+    g_2 = []
+    for para in para_triplets:
+        r_cut, r_s, eta, lambda_, zeta = para 
+        g_2.append(bp.g_2(cosTheta = cosTheta, R = distmatrix, elements = elements)[:,0]) ## each row of g_2 corresponds to a different set of parameters
 
-    n = len(g_1)  #TEMP
-    k = 2  #TEMP
-    return np.asarray([g_1,g_2]).reshape(n,k)
+    return np.vstack((g_1,g_2)).T ## stack and transpose so that now each row corresponds to an atom in the structure
 
 
 def pad(data, sects_i, sects_f):
