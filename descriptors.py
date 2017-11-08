@@ -4,7 +4,7 @@ import numpy, time
 from scipy.spatial.distance import cdist
 
 from molml.base import BaseFeature, SetMergeMixin
-from molml.utils import get_element_pairs, cosine_decay, get_angles
+from molml.utils import get_element_pairs, cosine_decay
 from molml.utils import get_index_mapping
 
 
@@ -172,6 +172,49 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         return 2 ** (1 - self.zeta) * values
 
 
+#    def calculate_cosTheta(self, coords, R):
+#        
+#        """
+#        Compute the angular term for all triples of atoms:
+#
+#            cos(\Theta_{ijk}) = (R_{ij} . R_{ik}) / (|R_{ij}| |R_{ik}|)
+#
+#        Right now this is a fairly naive implementation so this could be
+#        optimized quite a bit.
+#
+#        Parameters
+#        ----------
+#        coords : array, shape=(N_atoms, 3)
+#            An array of the Cartesian coordinates of all the atoms
+#        
+#        R : array, shape=(N_atoms, N_atoms)
+#            A distance matrix for all the atoms (scipy.spatial.cdist).
+#
+#        Returns
+#        -------
+#        Theta : array, shape=(N_atoms, N_atoms, N_atoms)
+#            The angular term for all the atoms given.
+#            
+#        """
+#        
+#        n = coords.shape[0]
+#        cosTheta = numpy.zeros((n, n, n))
+#        for i, Ri in enumerate(coords):
+#            for j, Rj in enumerate(coords):
+#                if i == j:
+#                    continue
+#                Rij = Ri - Rj
+#                for k, Rk in enumerate(coords):
+#                    if j <= k or i == k:
+#                        continue
+#                    Rik = Ri - Rk
+#                    cosTheta_ijk = numpy.dot(Rij, Rik) / (R[i,j] * R[i,k])
+#                    cosTheta[i,j,k] = cosTheta_ijk 
+#                    cosTheta[i,k,j] = cosTheta_ijk 
+#                    
+#        return cosTheta
+    
+    
     def calculate_cosTheta(self, coords, R):
         
         """
@@ -179,8 +222,7 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
             cos(\Theta_{ijk}) = (R_{ij} . R_{ik}) / (|R_{ij}| |R_{ik}|)
 
-        Right now this is a fairly naive implementation so this could be
-        optimized quite a bit.
+        This is only a slight modification from molml.utils.get_angles
 
         Parameters
         ----------
@@ -192,26 +234,17 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Returns
         -------
-        Theta : array, shape=(N_atoms, N_atoms, N_atoms)
-            The angular term for all the atoms given.
+        cosTheta : array, shape=(N_atoms, N_atoms, N_atoms)
+            The angular terms for all triplets of atoms.
+            cosTheta[i,j,k] is the angle of the triplet j-i-k (i is the central atom)
             
         """
         
-#        t0 = time.time()
-        n = coords.shape[0]
-        cosTheta = numpy.zeros((n, n, n))
-        for i, Ri in enumerate(coords):
-            for j, Rj in enumerate(coords):
-                if i == j:
-                    continue
-                Rij = Ri - Rj
-                for k, Rk in enumerate(coords):
-                    if j <= k or i == k:
-                        continue
-                    Rik = Ri - Rk
-                    cosTheta_ijk = numpy.dot(Rij, Rik) / (R[i,j] * R[i,k])
-                    cosTheta[i,j,k] = cosTheta_ijk 
-                    cosTheta[i,k,j] = cosTheta_ijk 
-#        print ("calc theta time: ",time.time()-t0)            
+        R_vecs = coords - coords[:,None]
+        with numpy.errstate(divide='ignore', invalid='ignore'):
+            R_unitvecs = R_vecs / R[:,:,None]
+        ## the Einstein summation in the following line essentially performs the dot product Rij.Rik
+        cosTheta = numpy.einsum('ijm,ikm->ijk', R_unitvecs, R_unitvecs)
+            
         return cosTheta
 
