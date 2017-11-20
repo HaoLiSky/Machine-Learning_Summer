@@ -2,7 +2,6 @@
 
 This module provides functions to read crystal/molecule data from files or
 filetrees (using ASE) and process data into fingerprints using descriptors.
-Currently, only the Parinnello-Behler descriptor is implemented.
 
 Representation Workflow:
 parse_property : read property values, save to intermediate .hdf5
@@ -17,9 +16,8 @@ import time
 import re
 import h5py
 import numpy as np
-# from descriptors import BehlerParrinello
-# from scipy.spatial.distance import cdist
-# from itertools import combinations
+from descriptors import BehlerParrinello
+from scipy.spatial.distance import cdist
 from itertools import combinations_with_replacement, islice
 from ase.io import iread
 
@@ -29,7 +27,9 @@ from ase.io import iread
 
 def initialize_argparser():
     """
+
     Initializes ArgumentParser for command-line operation.
+
     """
     argparser = argparse.ArgumentParser(description='Converts structures to \
                                         symmetry functions.')
@@ -55,9 +55,10 @@ def initialize_argparser():
     argparser.add_argument('-f', '--format',
                            help='file format for ase structure/molecule \
                            parsing. If unspecified, ASE will guess.')
-    argparser.add_argument('-d', '--descriptor', choices=['BP'], default='BP',
+    argparser.add_argument('-d', '--descriptor', choices=['BP', 'PH'],
+                           default='PH',
                            help='method of representing data; \
-                           default: Parinnello-Behler')
+                           default: placeholder (PH)')
     return argparser
 
 
@@ -91,7 +92,7 @@ def slice_generator(generator, string):
     Applies slicing to a generator.
 
     Args:
-        generator : The generator to convert.
+        generator: The generator to convert.
         string (str): Slice as string.
 
     Returns:
@@ -119,19 +120,31 @@ def parse_property(prop_name, loose, keyword, index):
     (e.g. CONTCAR_0: -0.4E+3; POSCAR_1: -0.3E+2 ...)
     If crystal/molecule input is one fine, values may be parsed with a
     specified *preceding* keyword/keystring.
-    Values or filename-value pairs may be comma-separated, colon-separated,
-    and/or white-space-separated.
+
+    If loose,
+        Each Filename & value must be joined with a colon, comma,
+        or equals-sign (whitespace optional). Pairs may be comma-separated,
+        colon-separated, and/or white-space-separated.
+
+    If a keyword is given,
+        Each keyword & value may be joined by whitespace, comma, colon,
+        or equals-sign, and must be followed by a comma, a semicolon,
+        whitespace, or a linebreak.
+
+    Otherwise,
+        Values may be separated by whitespace, linebreaks, commas,
+        or semicolons.
 
     Args:
         prop_name (str): Property data filename.
-        loose : True if crystal/molecule input is a directory.
+        loose: True if crystal/molecule input is a directory.
         keyword (str): Optional string to find property values.
             (e.g "energy" to find "energy: 0.423eV"
             or "E0" to find "E0= -0.52E+02")
         index (str): Slice. Must match in parse_ase.
 
     Returns:
-        property_list : Property values as floats or dictionary of
+        property_list: Property values as floats or dictionary of
             filename-value pairs if loose.
 
     """
@@ -146,11 +159,11 @@ def parse_property(prop_name, loose, keyword, index):
     else:
         if keyword:
             parser = re.compile('(?:' + keyword
-                                + '[=\s,:]*)(\S+)(?:[;,\s])')
+                                + '[=\s,:]*)([^;,\s]+)')
 
             property_list = [float(match) for match in parser.findall(data)]
         else:
-            parser = re.compile('(\S+)(?:[,;\s])')
+            parser = re.compile('([^,;\s]+)(?:[,;\s])')
             property_list = [float(match) for match in parser.findall(data)]
             # list of values after slicing
 
@@ -158,17 +171,17 @@ def parse_property(prop_name, loose, keyword, index):
     return property_list[strslice(index)]
 
 
-def write_structure(h5f, structure, symbol_set, symbol_order, s_name,
+def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
                     property_value):
     """
 
     Writes one crystal/molecule object's data to .hdf5 file.
 
     Args:
-        h5f : h5py object for writing.
-        structure : ASE Atoms object.
-        symbol_set : List of unique element names as strings.
-        symbol_order : Dictionary of elements and specified order.
+        h5f: h5py object for writing.
+        structure: ASE Atoms object.
+        system_symbols: List of system-wide unique element names as strings.
+        symbol_order: Dictionary of elements and specified order.
         s_name (str): Atoms' identifier to use as group name.
         property_value (float): Atoms' corresponding property value.
 
@@ -176,6 +189,8 @@ def write_structure(h5f, structure, symbol_set, symbol_order, s_name,
     coords = structure.get_positions(wrap=False)
     natoms = len(coords)
     species = structure.get_chemical_symbols()
+    symbol_set = list(set(species))
+    assert set(species).issubset(set(system_symbols))
     species_counts = np.asarray([species.count(cspecie)
                                  for cspecie
                                  in symbol_set]).astype('i4')
@@ -200,7 +215,8 @@ def write_structure(h5f, structure, symbol_set, symbol_order, s_name,
     dset_coords.attrs['property'] = property_value
 
 
-def parse_ase(input_name, output_name, index, symbol_set, form, property_list):
+def parse_ase(input_name, output_name, index, system_symbols, form,
+              property_list):
     """
 
     Parses crystal/molecule data and property data and writes to .hdf5 file.
@@ -217,15 +233,15 @@ def parse_ase(input_name, output_name, index, symbol_set, form, property_list):
             crystal/molecule data.
         output_name (str): Filename for .hdf5.
         index (str): Slice. Must match in parse_property.
-        symbol_set : List of unique element names as strings.
+        system_symbols: List of system-wide unique element names as strings.
         form (str): Optional file format string to pass to ASE's read function.
-        property_list : List of property values as floats or
+        property_list: List of property values as floats or
             dictionary of filename-value pairs if loose.
 
     """
     prefix = input_name.replace('.', '') + '_'
 
-    symbol_order = {k: v for v, k in enumerate(symbol_set)}
+    symbol_order = {k: v for v, k in enumerate(system_symbols)}
     with h5py.File(output_name, 'w', libver='latest') as h5f:
         try:
             s_count = len(h5f['structures'].keys())
@@ -246,16 +262,19 @@ def parse_ase(input_name, output_name, index, symbol_set, form, property_list):
                     for structure in structures:
                         s_name = filename + str(s_count)
                         property_value = property_list[filename]
-                        write_structure(h5f, structure, symbol_set,
-                                        symbol_order, s_name,
-                                        property_value)
-                        s_count += 1
+                        try:
+                            write_structure(h5f, structure, system_symbols,
+                                            symbol_order, s_name,
+                                            property_value)
+                            s_count += 1
+                        except AssertionError:
+                            continue
         else:
             structures = iread(input_name, format=form, index=index)
             for structure in structures:
                 s_name = prefix + str(s_count)
                 property_value = property_list[s_count]
-                write_structure(h5f, structure, symbol_set,
+                write_structure(h5f, structure, system_symbols,
                                 symbol_order, s_name, property_value)
                 s_count += 1
         print(str(s_count - s_count_start), 'structures parsed into .hdf5')
@@ -273,11 +292,11 @@ def read_structure(h5i, s_name):
 
     Returns:
         coords (n x 3 numpy array): Coordinates for each atom.
-        symbol_set : List of unique element names as strings.
-        species_counts : List of occurences for each element type.
-        species_list : List of element namestring for each atom.
+        symbol_set: List of unique element names in structure as strings.
+        species_counts: List of occurences for each element type.
+        species_list: List of element namestring for each atom.
         unit (3x3 numpy array): Atoms' unit cell vectors (zeros if molecule).
-        periodic : True if crystal.
+        periodic: True if crystal.
         property_value (float): Corresponding property value.
 
     """
@@ -299,37 +318,111 @@ def read_structure(h5i, s_name):
             species_list, unit, periodic, property_value]
 
 
-def make_fingerprint(h5o, s_data, s_name, parameters):
+def make_fingerprint(h5o, s_data, s_name, parameters,
+                     system_symbols, descriptor):
     """
 
-    Reads data for one crystal/molecule and correpsonding property data
+    Reads data for one crystal/molecule and corresponding property data
     from .hdf5 file.
 
     Args:
-        h5o : h5py object for writing.
-        s_data : List of data (output of read_structure).
+        h5o: h5py object for writing.
+        s_data: List of data (output of read_structure).
         s_name (str): Atoms' identifier to be used as group name in h5o.
-        parameters : Descriptor parameters.
+        parameters: Descriptor parameters.
+        system_symbols: List of system-wide unique element names as strings.
+        descriptor: Descriptor to use.
+
+    """
+    if descriptor == 'PH':
+        placeholder_fingerprint(h5o, s_data, s_name, parameters,
+                                system_symbols)
+    elif descriptor == 'BP':
+        bp_fingerprint(h5o, s_data, s_name, parameters, system_symbols)
+
+
+def bp_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
+    """
+    Parrinello-Behler representation. Computes fingerprints for
+    pairwise (g_1) and triple (g_2) interactions.
+
+    Fingerprints are ndarrays of size (n x s x k)
+    where n = number of atoms, k = number of parameters given for the
+    fingerprint, and s = combinations with replacement of the system's species
+    set. When the input's species set is less than the system's species set,
+    fingerprints are padded.
+
+    Args:
+        h5o: h5py object for writing.
+        s_data: List of data (output of read_structure).
+        s_name (str): Atoms' identifier to be used as group name in h5o.
+        parameters: Descriptor parameters.
+        system_symbols: List of system-wide unique element names as strings.
 
     """
     (coords, symbol_set, species_counts,
      species_list, unit, periodic, property_value) = s_data
+    assert set(symbol_set).issubset(set(system_symbols))
+    para_pairs, para_triplets = parameters
 
-    '''
     bp = BehlerParrinello()
-    
-    ###### add updated with supercell code
-    '''
+    bp._elements = symbol_set
+    bp._element_pairs = list(combinations_with_replacement(symbol_set, 2))
+    if periodic:
+        bp._unitcell = unit
 
-    # PLACEHOLDER CODE!
+    distmatrix = cdist(coords, coords)
+    costheta = bp.calculate_cosTheta(coords, distmatrix, periodic)
 
+    g_1 = []
+    for para in para_pairs:
+        r_cut, r_s, eta, lambda_, zeta = para
+        g_1.append(bp.g_1(distmatrix, species_list, periodic)[:, 0])
+
+    g_2 = []
+    for para in para_triplets:
+        r_cut, r_s, eta, lambda_, zeta = para
+        g_2.append(bp.g_2(costheta, distmatrix, species_list, periodic)[:, 0])
+
+    g_1, g_2 = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
+
+    dname_1 = 'structures/%s/pairs' % s_name
+    dname_2 = 'structures/%s/triplets' % s_name
+    h5o.create_dataset(dname_1, g_1.shape,
+                       data=g_1, dtype='f4', compression="gzip")
+    h5o.create_dataset(dname_2, g_2.shape,
+                       data=g_2, dtype='f4', compression="gzip")
+    h5o['structures'][s_name].attrs['natoms'] = len(coords)
+    h5o['structures'][s_name].attrs['symbol_set'] = np.string_(symbol_set)
+    h5o['structures'][s_name].attrs['species_counts'] = species_counts
+    h5o['structures'][s_name].attrs['property'] = property_value
+
+
+def placeholder_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
+    """
+
+    Args:
+        h5o: h5py object for writing.
+        s_data: List of data (output of read_structure).
+        s_name (str): Atoms' identifier to be used as group name in h5o.
+        parameters: Descriptor parameters.
+        system_symbols: List of system-wide unique element names as strings.
+
+    """
+    (coords, symbol_set, species_counts,
+     species_list, unit, periodic, property_value) = s_data
+    assert set(symbol_set).issubset(set(system_symbols))
     para_pairs, para_triplets = parameters
     n_atoms = len(coords)
+    n_species = len(symbol_set)
+    pair_num = len(list(combinations_with_replacement(range(n_species), 1)))
+    triplet_num = len(list(combinations_with_replacement(range(n_species),
+                                                         2)))
+
+    # PLACEHOLDER CODE! Random g_1 and g_2, matching desired shape
     coord_sums = np.sum(coords, axis=1)
     # sum of coordinates for each atom
-    n_species = len(symbol_set)
 
-    pair_num = len(list(combinations_with_replacement(range(n_species), 1)))
     pair_factors = np.random.rand(pair_num, 1)
     # 1 factor per pair interaction (specie in sphere)
     para_factors_1 = np.sum(para_pairs, axis=0)
@@ -344,9 +437,6 @@ def make_fingerprint(h5o, s_data, s_name, parameters):
     g_1 = np.multiply(np.multiply(tile_atoms_1, tile_inter_1),
                       tile_parameters_1)
     # g_1.shape ~ (#atoms x #species x #pair_parameters)
-
-    triplet_num = len(list(combinations_with_replacement(range(n_species),
-                                                         2)))
     triplet_factors = np.random.rand(triplet_num, 1)
     # 1 factor per triplet interaction (2 species in sphere)
     para_factors_2 = np.sum(para_triplets, axis=0)
@@ -365,25 +455,57 @@ def make_fingerprint(h5o, s_data, s_name, parameters):
     #              #triplet_parameters
 
     # PLACEHOLDER CODE!
+    g_1, g_2 = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
 
     dname_1 = 'structures/%s/pairs' % s_name
     dname_2 = 'structures/%s/triplets' % s_name
-    dset_1 = h5o.create_dataset(dname_1,
-                                g_1.shape,
-                                data=g_1, dtype='f4',
-                                compression="gzip")
-    dset_2 = h5o.create_dataset(dname_2,
-                                g_2.shape,
-                                data=g_2, dtype='f4',
-                                compression="gzip")
-    dset_1.attrs['natoms'] = len(coords)
-    dset_1.attrs['symbol_set'] = np.string_(symbol_set)
-    dset_1.attrs['species_counts'] = species_counts
-    dset_1.attrs['property'] = property_value
+    h5o.create_dataset(dname_1, g_1.shape,
+                       data=g_1, dtype='f4', compression="gzip")
+    h5o.create_dataset(dname_2, g_2.shape,
+                       data=g_2, dtype='f4', compression="gzip")
+    h5o['structures'][s_name].attrs['natoms'] = len(coords)
+    h5o['structures'][s_name].attrs['symbol_set'] = np.string_(symbol_set)
+    h5o['structures'][s_name].attrs['species_counts'] = species_counts
+    h5o['structures'][s_name].attrs['property'] = property_value
 
 
-def apply_descriptors(input_name, para_file, output_name, index,
-                      descriptor, symbol_set):
+def pad_fingerprints(terms, symbol_set, system_symbols, dims):
+    """
+
+    Args:
+        terms: List of fingerprints.
+        symbol_set: List of unique element names in structure as strings.
+        system_symbols: List of system-wide unique element names as strings.
+        dims: Dimensionality of interaction.
+            (e.g. 1 for pairwise, 2 for triplets)
+
+    Returns:
+        padded: Padded fingerprints.
+
+    """
+    assert len(dims) == len(terms)
+    system_groups = [list(combinations_with_replacement(system_symbols, dim))
+                     for dim in dims]
+
+    s_groups = [list(combinations_with_replacement(symbol_set, dim))
+                for dim in dims]
+
+    n_groups = [len(groups) for groups in system_groups]
+
+    padded = [np.zeros((g.shape[0], n_groups[j], g.shape[2]))
+              for j, g in enumerate(terms)]
+
+    content_slices = [[sys_group.index(group) for group in s_group]
+                      for s_group, sys_group in zip(s_groups, system_groups)]
+
+    for dim, content_indices in enumerate(content_slices):
+        for s_index, sys_index in enumerate(content_indices):
+            padded[dim][:, sys_index, :] = terms[dim][:, s_index, :]
+
+    return padded
+
+def apply_descriptors(input_name, para_file, output_name,
+                      descriptor, system_symbols):
     """
 
     Reads crystal/molecule data from .hdf5, creates fingerprints, and writes to
@@ -393,9 +515,8 @@ def apply_descriptors(input_name, para_file, output_name, index,
         input_name (str): Filename of .hdf5 for reading crystal/molecule data.
         para_file (str): Filename of descriptor parameters.
         output_name (str): Filename of .hdf5 for writing fingerprint data.
-        index (str): Slice for processing.
         descriptor (str): Descriptor to use to represent crystal/molecule data.
-        symbol_set : List of unique element names as strings.
+        system_symbols: List of system-wide unique element names as strings.
 
     """
     # parameters = read_BP_parameters(para_file)
@@ -406,6 +527,16 @@ def apply_descriptors(input_name, para_file, output_name, index,
 
     with h5py.File(input_name, 'r', libver='latest') as h5i:
         with h5py.File(output_name, 'w', libver='latest') as h5o:
+            h5o.create_dataset('system/pair',
+                               parameters[0].shape,
+                               data=parameters[0], dtype='f4',
+                               compression="gzip")
+            h5o.create_dataset('system/triplet',
+                               parameters[1].shape,
+                               data=parameters[1], dtype='f4',
+                               compression="gzip")
+            h5o['system'].attrs = np.string_(system_symbols)
+
             s_names = list(h5i['structures'].keys())
             s_tot = len(s_names)
             s_count = 0
@@ -415,9 +546,10 @@ def apply_descriptors(input_name, para_file, output_name, index,
                       str(s_tot).rjust(10), end='\r')
                 try:
                     s_data = read_structure(h5i, s_name)
-                    make_fingerprint(h5o, s_data, s_name, parameters)
+                    make_fingerprint(h5o, s_data, s_name, parameters,
+                                     system_symbols, descriptor)
                     s_count += 1
-                except (KeyError, ValueError):
+                except (KeyError, ValueError, AssertionError):
                     f_count += 1
                     continue
             print(str(s_count), 'fingerprints created')
@@ -449,7 +581,7 @@ if __name__ == '__main__':
             raise IOError('Expected .hdf5 input')
 
         t0 = time.time()
-        apply_descriptors(input_name, args.input2, output_name, args.index,
+        apply_descriptors(input_name, args.input2, output_name,
                           args.descriptor, symbol_set)
         print(time.time() - t0)
 
