@@ -22,9 +22,6 @@ from itertools import combinations_with_replacement, islice
 from ase.io import iread
 
 
-# BP_DEFAULT = [6.0, 1.0, 1.0, 1.0, 1.0]
-
-
 def initialize_argparser():
     """
 
@@ -33,7 +30,8 @@ def initialize_argparser():
     """
     argparser = argparse.ArgumentParser(description='Converts structures to \
                                         symmetry functions.')
-    argparser.add_argument('action', choices=['represent', 'parse'])
+    argparser.add_argument('action', choices=['represent', 'parse',
+                                              'validate'])
     argparser.add_argument('input',
                            help='.hdf5 for representation or ase-compatible \
                                  file or root of filetree for parsing')
@@ -129,6 +127,8 @@ def read_parameters(para_file):
 
     pairs, triplets = [], []
     for line in lines:
+        if not line:
+            continue
         entries = line.split()
         if entries[0][0] == 'p':
             pairs.append([float(para) for para in entries[1:]])
@@ -137,7 +137,7 @@ def read_parameters(para_file):
         else:
             raise ValueError('invalid keyword!')
 
-    return pairs, triplets
+    return np.asarray(pairs), np.asarray(triplets)
 
 
 def parse_property(data, loose=False, keyword=None, index=':'):
@@ -177,11 +177,13 @@ def parse_property(data, loose=False, keyword=None, index=':'):
             filename-value pairs if loose.
 
     """
+    data = data+';'  # ensures final value is not skipped
     if loose:
-        parser = re.compile('(\w+)(?:[=\s,:]+)(\S+)(?:[;,\s])')
+        parser = re.compile('([\w\._]+)(?:[=\s,:]+)(\S+)(?:[;,\s])')
         data_pairs = parser.findall(data)
         property_list = {k: v for k, v in data_pairs}
         # full dictionary, one value per structure file
+        return property_list
     else:
         if keyword:
             parser = re.compile('(?:' + keyword
@@ -193,7 +195,7 @@ def parse_property(data, loose=False, keyword=None, index=':'):
             property_list = [float(match) for match in parser.findall(data)]
             # list of values after slicing
             # assumed to match with ase.io.iread's slicing
-    return property_list[strslice(index)]
+        return property_list[strslice(index)]
 
 
 def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
@@ -281,11 +283,12 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
                 for filename in files:
                     # print(os.path.join(root, filename))
                     try:
-                        structures = iread(filename, format=form)
+                        structures = iread(os.path.join(root, filename),
+                                           format=form)
                     except (ValueError, IOError, IndexError):
                         continue
                     for structure in structures:
-                        s_name = filename + str(s_count)
+                        s_name = filename.replace('.', '') + '_' + str(s_count)
                         property_value = property_data[filename]
                         try:
                             write_structure(h5f, structure, system_symbols,
@@ -401,12 +404,12 @@ def bp_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
 
     g_1 = []
     for para in para_pairs:
-        r_cut, r_s, eta, lambda_, zeta = para
+        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
         g_1.append(bp.g_1(distmatrix, species_list, periodic)[:, 0])
 
     g_2 = []
     for para in para_triplets:
-        r_cut, r_s, eta, lambda_, zeta = para
+        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
         g_2.append(bp.g_2(costheta, distmatrix, species_list, periodic)[:, 0])
 
     g_1, g_2 = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
@@ -494,22 +497,20 @@ def placeholder_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
     h5o['structures'][s_name].attrs['property'] = property_value
 
 
-def pad_fingerprints(terms, symbol_set, system_symbols, dims=None):
+def pad_fingerprints(terms, symbol_set, system_symbols, dims=[1, 2]):
     """
 
     Args:
         terms: List of fingerprints.
         symbol_set: List of unique element names in structure as strings.
         system_symbols: List of system-wide unique element names as strings.
-        dims: Dimensionality of interaction.
-            (e.g. 1 for pairwise, 2 for triplets)
+        dims: Dimensionality of interaction(s).
+            (e.g. 1 for pairwise, 2 for triplets, [1,2] for both)
 
     Returns:
         padded: Padded fingerprints.
 
     """
-    if not dims:
-        dims = np.add(np.arange(len(terms)), 1)
     assert len(dims) == len(terms)
     symbol_order = {k: v for v, k in enumerate(system_symbols)}
     symbol_set = sorted(symbol_set, key=symbol_order.get)
@@ -570,17 +571,62 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
             for j, s_name in enumerate(s_names):
                 print('processing', str(j + 1).rjust(10), '/',
                       str(s_tot).rjust(10), end='\r')
-                # try:
                 s_data = read_structure(h5i, s_name)
                 make_fingerprint(h5o, s_data, s_name, parameters,
                                  system_symbols, descriptor=descriptor)
                 s_count += 1
-                # except (KeyError, ValueError, AssertionError):
-                #    f_count += 1
-                #    continue
             print(str(s_count), 'fingerprints created')
             if f_count > 0:
                 print(str(f_count), 'fingerprint(s) failed')
+
+
+def validate_hdf5(filename):
+    """
+
+    Quickly check .hdf5 integrity for structures or fingerprints.
+    Presently, only checks for the presence of keys, not
+    typing or dimensionality.
+
+    Args:
+        filename: Filename of .hdf5
+
+    Returns:
+        n_structures (int): Number of valid structures saved.
+        n_fingerprints (int): Number of valid fingerprints saved.
+        n_other (int): Number of other keys found in 'structures' group.
+
+    """
+    with h5py.File(filename, 'r', libver='latest') as h5f:
+        s_names = list(h5f['structures'].keys())
+        n_structures = 0
+        n_fingerprints = 0
+        n_other = 0
+        s_dset = h5f['structures']
+        for j, s_name in enumerate(s_names):
+            if 'coordinates' in s_dset[s_name].keys():
+                dset = s_dset[s_name]['coordinates']
+                present = list(dset.attrs.keys())
+                s_needed = ['natoms', 'property', 'symbol_set',
+                            'species_counts', 'unit', 'periodic']
+                if set(s_needed) == set(present):
+                    n_structures += 1
+                else:
+                    print(s_name, end='; ')
+            elif 'pairs' in s_dset[s_name].keys():
+                dset = s_dset[s_name]
+                present = list(dset.attrs.keys()) + list(dset.keys())
+                f_needed = ['natoms', 'property', 'symbol_set',
+                            'species_counts', 'pairs', 'triplets']
+                if set(f_needed) == set(present):
+                    n_fingerprints += 1
+                else:
+                    print(s_name, end='; ')
+            else:
+                n_other += 1
+                print(s_name, end='; ')
+            print(n_structures, n_fingerprints, n_other, end='\r')
+        print(n_structures, n_fingerprints, n_other)
+        return n_structures, n_fingerprints, n_other
 
 
 if __name__ == '__main__':
@@ -622,3 +668,5 @@ if __name__ == '__main__':
         # dictionary if loose, list otherwise
         structures_to_hdf5(input_name, output_name, args.system_symbols,
                            property_data, index=args.index, form=args.form)
+    elif args.action == 'validate':
+        validate_hdf5(input_name)
