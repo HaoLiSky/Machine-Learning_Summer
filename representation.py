@@ -4,10 +4,12 @@ This module provides functions to read crystal/molecule data from files or
 filetrees (using ASE) and process data into fingerprints using descriptors.
 
 Representation Workflow:
-parse_property : read property values, save to intermediate .hdf5
-parse_ase : read coordinate and element data, save to intermediate .hdf5
-apply_fingerprints : read intermediate .hdf5, process into fingerprints,
+parse_property: read property values, save to intermediate .hdf5
+structures_to_hdf5: read coordinate and element data,
+                     save to intermediate .hdf5
+apply_fingerprints: read intermediate .hdf5, process into fingerprints,
                      write to another .hdf5
+validate_hdf5: Check .hdf5 integrity for structures or fingerprints.
 
 """
 import os
@@ -295,6 +297,7 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
                                             symbol_order, s_name,
                                             property_value)
                             s_count += 1
+                            print(s_count, end='\r')
                         except AssertionError:
                             continue
         else:
@@ -305,6 +308,7 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
                 write_structure(h5f, structure, system_symbols,
                                 symbol_order, s_name, property_value)
                 s_count += 1
+                print(s_count, end='\r')
         print(str(s_count - s_count_start), 'structures parsed into .hdf5')
 
 
@@ -583,7 +587,7 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
 def validate_hdf5(filename):
     """
 
-    Quickly check .hdf5 integrity for structures or fingerprints.
+    Check .hdf5 integrity for structures or fingerprints.
     Presently, only checks for the presence of keys, not
     typing or dimensionality.
 
@@ -633,40 +637,49 @@ if __name__ == '__main__':
     argparser = initialize_argparser()
     args = argparser.parse_args()
 
-    symbol_set = args.symbol_set.split(',')
-    if not len(symbol_set) == len(set(list(symbol_set))):
-        raise ValueError('duplicate elements in symbol_set: ' + symbol_set)
+    system_symbols = args.system_symbols.split(',')
+    if not len(system_symbols) == len(set(list(system_symbols))):
+        raise ValueError('duplicate elements in symbol_set: ' + system_symbols)
 
     if ':' not in args.index:
         raise ValueError('invalid slice specified: ' + args.index)
 
     input_name = args.input
-    if args.output:
-        output_name = args.output
-        if '.hdf5' not in output_name:
-            output_name = output_name + '.hdf5'
-    else:
-        output_name = input_name.split('.')[0] + '.hdf5'
 
     if args.action == 'represent':
         if '.hdf5' not in input_name:
             raise IOError('Expected .hdf5 input')
+        if args.output:
+            output_name = args.output
+            if '.hdf5' not in output_name:
+                output_name = output_name + '.hdf5'
+        else:
+            output_name = input_name + '_fingerprint.hdf5'
 
         t0 = time.time()
         parameters = read_parameters(args.input2)
-        apply_descriptors(input_name, output_name, symbol_set, parameters,
+        apply_descriptors(input_name, output_name, system_symbols, parameters,
                           descriptor=args.descriptor)
-        print(time.time() - t0)
+        print(time.time() - t0, 'seconds elapsed.')
 
     elif args.action == 'parse':
+        if args.output:
+            output_name = args.output
+            if '.hdf5' not in output_name:
+                output_name = output_name + '.hdf5'
+        else:
+            output_name = input_name + '_structures.hdf5'
+
         loose = os.path.isdir(input_name)
         with open(args.input2, 'r') as propfile:
             proptext = propfile.read()
+        t0 = time.time()
         property_data = parse_property(proptext, loose=loose,
                                        keyword=args.keyword,
                                        index=args.index)
         # dictionary if loose, list otherwise
-        structures_to_hdf5(input_name, output_name, args.system_symbols,
+        structures_to_hdf5(input_name, output_name, system_symbols,
                            property_data, index=args.index, form=args.form)
+        print(time.time() - t0, 'seconds elapsed.')
     elif args.action == 'validate':
         validate_hdf5(input_name)
