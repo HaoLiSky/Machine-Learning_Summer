@@ -17,10 +17,11 @@ import argparse
 import time
 import re
 import h5py
+import traceback
+
 import numpy as np
-from descriptors import BehlerParrinello
-from scipy.spatial.distance import cdist
-from itertools import combinations_with_replacement, islice
+from fingerprints import bp_fingerprint, dummy_fingerprint
+from itertools import islice
 from ase.io import iread
 
 
@@ -43,22 +44,22 @@ def initialize_argparser():
     argparser.add_argument('system_symbols',
                            help='comma-separated list of unique elements; \
                            e.g. "Au" or "Ba,Ti,O"')
-    argparser.add_argument('-k', '--keyword',
-                           help='keyword to parse embedded property data; \
-                           default: None')
     argparser.add_argument('-o', '--output',
                            help='specify filename for .hdf5 output; \
                                 default mirrors input name')
+    argparser.add_argument('-k', '--keyword',
+                           help='keyword to parse embedded property data; \
+                           default: None')
     argparser.add_argument('-i', '--index', default=':',
                            help='slicing using numpy convention; \
                            e.g. ":250" or "-500:" or "::2"')
     argparser.add_argument('-f', '--form',
                            help='file format for ase structure/molecule \
                            parsing. If unspecified, ASE will guess.')
-    argparser.add_argument('-d', '--descriptor', choices=['BP', 'PH'],
-                           default='PH',
-                           help='method of representing data; \
-                           default: placeholder (PH)')
+    argparser.add_argument('-d', '--descriptor', choices=['BP', 'dummy'],
+                           default='dummy',
+                           help='method of fingerprinting data; \
+                           default: placeholder (dummy)')
     return argparser
 
 
@@ -179,7 +180,7 @@ def parse_property(data, loose=False, keyword=None, index=':'):
             filename-value pairs if loose.
 
     """
-    data = data+';'  # ensures final value is not skipped
+    data = data + ';'  # ensures final value is not skipped
     if loose:
         parser = re.compile('([\w\._]+)(?:[=\s,:]+)(\S+)(?:[;,\s])')
         data_pairs = parser.findall(data)
@@ -223,6 +224,7 @@ def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
     species_counts = np.asarray([species.count(cspecie)
                                  for cspecie
                                  in system_symbols]).astype('i4')
+    assert sum(species_counts) == natoms
     species, coords = zip(*sorted(zip(species, coords),
                                   key=lambda x: symbol_order.get(x[0])))
     try:
@@ -231,7 +233,7 @@ def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
     except (ValueError, RuntimeError, AttributeError):
         unit = np.zeros((3, 3))
         periodic = False
-    dset_name = 'structures/%s/coordinates' % s_name
+    dset_name = 'structures/{}/coordinates'.format(s_name)
     dset_coords = h5f.create_dataset(dset_name,
                                      (natoms, 3),
                                      data=coords, dtype='f4',
@@ -272,10 +274,9 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
 
     symbol_order = {k: v for v, k in enumerate(system_symbols)}
     with h5py.File(output_name, 'w', libver='latest') as h5f:
-        try:
-            s_count = len(h5f['structures'].keys())
-        except KeyError:
-            s_count = 0
+        system_parameters = h5f.require_group('system')
+        system_parameters.attrs['system_symbols'] = np.string_(system_symbols)
+        s_count = len(h5f.require_group('structures').keys())
         s_count_start = s_count + 0
         print(str(s_count_start), 'structures to start')
         loose = os.path.isdir(input_name)
@@ -291,24 +292,37 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
                         continue
                     for structure in structures:
                         s_name = filename.replace('.', '') + '_' + str(s_count)
-                        property_value = property_data[filename]
                         try:
+                            property_value = property_data[filename]
                             write_structure(h5f, structure, system_symbols,
                                             symbol_order, s_name,
                                             property_value)
                             s_count += 1
-                            print(s_count, end='\r')
+                            print('read', s_count, end='\r')
+                        except KeyError:
+                            print('no corresponding property_data:', s_name)
+                            continue
                         except AssertionError:
+                            print('error in', s_name, end='\n\n')
+                            traceback.print_exc()
                             continue
         else:
             structures = iread(input_name, format=form, index=index)
             for structure in structures:
                 s_name = prefix + str(s_count)
-                property_value = property_data[s_count]
-                write_structure(h5f, structure, system_symbols,
-                                symbol_order, s_name, property_value)
-                s_count += 1
-                print(s_count, end='\r')
+                try:
+                    property_value = property_data[s_count]
+                    write_structure(h5f, structure, system_symbols,
+                                    symbol_order, s_name, property_value)
+                    s_count += 1
+                except IndexError:
+                    print('no corresponding property_data:', s_name)
+                    continue
+                except AssertionError:
+                    print('error in', s_name, end='\n\n')
+                    traceback.print_exc()
+                    continue
+                print('read', s_count, end='\r')
         print(str(s_count - s_count_start), 'structures parsed into .hdf5')
 
 
@@ -337,11 +351,11 @@ def read_structure(h5i, s_name):
     symbol_set = [symbol.decode('utf-8')
                   for symbol in dset.attrs['symbol_set']]
     species_counts = dset.attrs['species_counts']
-
+    assert len(symbol_set) == len(species_counts)
     species_list = []
     for symbol, ccount in zip(symbol_set, species_counts):
         species_list += [symbol] * ccount
-
+    assert len(species_list) == len(coords)
     unit = dset.attrs['unit']
     periodic = dset.attrs['periodic']
     property_value = dset.attrs['property']
@@ -351,7 +365,7 @@ def read_structure(h5i, s_name):
 
 
 def make_fingerprint(h5o, s_data, s_name, parameters,
-                     system_symbols, descriptor='PH'):
+                     system_symbols, descriptor='dummy'):
     """
 
     Reads data for one crystal/molecule and corresponding property data
@@ -366,178 +380,23 @@ def make_fingerprint(h5o, s_data, s_name, parameters,
         descriptor: Descriptor to use.
 
     """
-    if descriptor == 'PH':
-        placeholder_fingerprint(h5o, s_data, s_name, parameters,
-                                system_symbols)
+    if descriptor == 'dummy':
+        inputs = dummy_fingerprint(s_data, parameters,
+                                   system_symbols)
     elif descriptor == 'BP':
-        bp_fingerprint(h5o, s_data, s_name, parameters, system_symbols)
+        inputs = bp_fingerprint(s_data, parameters, system_symbols)
 
-
-def bp_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
-    """
-    Parrinello-Behler representation. Computes fingerprints for
-    pairwise (g_1) and triple (g_2) interactions.
-
-    Fingerprints are ndarrays of size (n x s x k)
-    where n = number of atoms, k = number of parameters given for the
-    fingerprint, and s = combinations with replacement of the system's species
-    set. When the input's species set is less than the system's species set,
-    fingerprints are padded.
-
-    Args:
-        h5o: h5py object for writing.
-        s_data: List of data (output of read_structure).
-        s_name (str): Atoms' identifier to be used as group name in h5o.
-        parameters: Descriptor parameters.
-        system_symbols: List of system-wide unique element names as strings.
-
-    """
     (coords, symbol_set, species_counts,
      species_list, unit, periodic, property_value) = s_data
-    assert set(symbol_set).issubset(set(system_symbols))
-    para_pairs, para_triplets = parameters
 
-    bp = BehlerParrinello()
-    bp._elements = symbol_set
-    bp._element_pairs = list(combinations_with_replacement(symbol_set, 2))
-    if periodic:
-        bp._unitcell = unit
-
-    distmatrix = cdist(coords, coords)
-    costheta = bp.calculate_cosTheta(coords, distmatrix, periodic)
-
-    g_1 = []
-    for para in para_pairs:
-        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
-        g_1.append(bp.g_1(distmatrix, species_list, periodic)[:, 0])
-
-    g_2 = []
-    for para in para_triplets:
-        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
-        g_2.append(bp.g_2(costheta, distmatrix, species_list, periodic)[:, 0])
-
-    g_1, g_2 = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
-
-    dname_1 = 'structures/%s/pairs' % s_name
-    dname_2 = 'structures/%s/triplets' % s_name
-    h5o.create_dataset(dname_1, g_1.shape,
-                       data=g_1, dtype='f4', compression="gzip")
-    h5o.create_dataset(dname_2, g_2.shape,
-                       data=g_2, dtype='f4', compression="gzip")
+    for label, term in inputs:
+        dname = 'structures/{}/{}'.format(s_name, label)
+        h5o.create_dataset(dname, term.shape,
+                           data=term, dtype='f4', compression="gzip")
     h5o['structures'][s_name].attrs['natoms'] = len(coords)
     h5o['structures'][s_name].attrs['symbol_set'] = np.string_(symbol_set)
     h5o['structures'][s_name].attrs['species_counts'] = species_counts
     h5o['structures'][s_name].attrs['property'] = property_value
-
-
-def placeholder_fingerprint(h5o, s_data, s_name, parameters, system_symbols):
-    """
-
-    Args:
-        h5o: h5py object for writing.
-        s_data: List of data (output of read_structure).
-        s_name (str): Atoms' identifier to be used as group name in h5o.
-        parameters: Descriptor parameters.
-        system_symbols: List of system-wide unique element names as strings.
-
-    """
-    (coords, symbol_set, species_counts,
-     species_list, unit, periodic, property_value) = s_data
-    assert set(symbol_set).issubset(set(system_symbols))
-    para_pairs, para_triplets = parameters
-    n_atoms = len(coords)
-    n_species = len(symbol_set)
-    pair_num = len(list(combinations_with_replacement(range(n_species), 1)))
-    triplet_num = len(list(combinations_with_replacement(range(n_species),
-                                                         2)))
-
-    # PLACEHOLDER CODE! Random g_1 and g_2, matching desired shape
-    coord_sums = np.sum(coords, axis=1)
-    # sum of coordinates for each atom
-
-    pair_factors = np.random.rand(pair_num, 1)
-    # 1 factor per pair interaction (specie in sphere)
-    para_factors_1 = np.sum(para_pairs, axis=0)
-    para_num_1 = len(para_factors_1)
-    # 1 factor per parameter set
-    tile_atoms_1 = np.tile(coord_sums.reshape(n_atoms, 1, 1),
-                           (1, pair_num, para_num_1))
-    tile_inter_1 = np.tile(pair_factors.reshape(1, pair_num, 1),
-                           (n_atoms, 1, para_num_1))
-    tile_parameters_1 = np.tile(para_factors_1.reshape(1, 1, para_num_1),
-                                (n_atoms, pair_num, 1))
-    g_1 = np.multiply(np.multiply(tile_atoms_1, tile_inter_1),
-                      tile_parameters_1)
-    # g_1.shape ~ (#atoms x #species x #pair_parameters)
-    triplet_factors = np.random.rand(triplet_num, 1)
-    # 1 factor per triplet interaction (2 species in sphere)
-    para_factors_2 = np.sum(para_triplets, axis=0)
-    para_num_2 = len(para_factors_2)
-    # 1 factor per parameter set
-    tile_atoms_2 = np.tile(coord_sums.reshape(n_atoms, 1, 1),
-                           (1, triplet_num, para_num_2))
-    tile_inter_2 = np.tile(triplet_factors.reshape(1, triplet_num, 1),
-                           (n_atoms, 1, para_num_2))
-    tile_parameters_2 = np.tile(para_factors_2.reshape(1, 1, para_num_2),
-                                (n_atoms, triplet_num, 1))
-    g_2 = np.multiply(np.multiply(tile_atoms_2, tile_inter_2),
-                      tile_parameters_2)
-    # g_2.shape ~ (#atoms x
-    #              [#combinations of species with replacement] x
-    #              #triplet_parameters
-
-    # PLACEHOLDER CODE!
-    g_1, g_2 = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
-
-    dname_1 = 'structures/%s/pairs' % s_name
-    dname_2 = 'structures/%s/triplets' % s_name
-    h5o.create_dataset(dname_1, g_1.shape,
-                       data=g_1, dtype='f4', compression="gzip")
-    h5o.create_dataset(dname_2, g_2.shape,
-                       data=g_2, dtype='f4', compression="gzip")
-    h5o['structures'][s_name].attrs['natoms'] = len(coords)
-    h5o['structures'][s_name].attrs['symbol_set'] = np.string_(symbol_set)
-    h5o['structures'][s_name].attrs['species_counts'] = species_counts
-    h5o['structures'][s_name].attrs['property'] = property_value
-
-
-def pad_fingerprints(terms, symbol_set, system_symbols, dims=[1, 2]):
-    """
-
-    Args:
-        terms: List of fingerprints.
-        symbol_set: List of unique element names in structure as strings.
-        system_symbols: List of system-wide unique element names as strings.
-        dims: Dimensionality of interaction(s).
-            (e.g. 1 for pairwise, 2 for triplets, [1,2] for both)
-
-    Returns:
-        padded: Padded fingerprints.
-
-    """
-    assert len(dims) == len(terms)
-    symbol_order = {k: v for v, k in enumerate(system_symbols)}
-    symbol_set = sorted(symbol_set, key=symbol_order.get)
-
-    system_groups = [list(combinations_with_replacement(system_symbols, dim))
-                     for dim in dims]
-
-    s_groups = [list(combinations_with_replacement(symbol_set, dim))
-                for dim in dims]
-
-    n_groups = [len(groups) for groups in system_groups]
-
-    padded = [np.zeros((g.shape[0], n_groups[j], g.shape[2]))
-              for j, g in enumerate(terms)]
-
-    content_slices = [[sys_group.index(group) for group in s_group]
-                      for s_group, sys_group in zip(s_groups, system_groups)]
-
-    for dim, content_indices in enumerate(content_slices):
-        for s_index, sys_index in enumerate(content_indices):
-            padded[dim][:, sys_index, :] = terms[dim][:, s_index, :]
-
-    return padded
 
 
 def apply_descriptors(input_name, output_name, system_symbols, parameters,
@@ -567,24 +426,29 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
                                data=parameters[1], dtype='f4',
                                compression="gzip")
             h5o['system'].attrs['system_symbols'] = np.string_(system_symbols)
-
-            s_names = list(h5i['structures'].keys())
+            s_names = list(h5i.require_group('structures').keys())
             s_tot = len(s_names)
             s_count = 0
             f_count = 0
             for j, s_name in enumerate(s_names):
                 print('processing', str(j + 1).rjust(10), '/',
                       str(s_tot).rjust(10), end='\r')
-                s_data = read_structure(h5i, s_name)
-                make_fingerprint(h5o, s_data, s_name, parameters,
-                                 system_symbols, descriptor=descriptor)
-                s_count += 1
+                try:
+                    s_data = read_structure(h5i, s_name)
+                    make_fingerprint(h5o, s_data, s_name, parameters,
+                                     system_symbols, descriptor=descriptor)
+                    s_count += 1
+                except AssertionError:
+                    print('error in', s_name, end='\n\n')
+                    traceback.print_exc()
+                    f_count += 1
+                    continue
             print(str(s_count), 'fingerprints created')
             if f_count > 0:
                 print(str(f_count), 'fingerprint(s) failed')
 
 
-def validate_hdf5(filename):
+def validate_hdf5(filename, system_symbols=[]):
     """
 
     Check .hdf5 integrity for structures or fingerprints.
@@ -593,6 +457,8 @@ def validate_hdf5(filename):
 
     Args:
         filename: Filename of .hdf5
+        system_symbols: Optional argument, in case it cannot be read from
+        the file.
 
     Returns:
         n_structures (int): Number of valid structures saved.
@@ -600,36 +466,108 @@ def validate_hdf5(filename):
         n_other (int): Number of other keys found in 'structures' group.
 
     """
+    default_dict = {'natoms': 0,
+                    'property': 0,
+                    'symbol_set': [],
+                    'species_counts': [0],
+                    'unit': [],
+                    'periodic': False}
+    system_symbols = [np.string_(x) for x in system_symbols]
     with h5py.File(filename, 'r', libver='latest') as h5f:
-        s_names = list(h5f['structures'].keys())
+        s_names = list(h5f.require_group('structures').keys())
         n_structures = 0
         n_fingerprints = 0
         n_other = 0
         s_dset = h5f['structures']
+        try:
+            system_symbols = h5f['system'].attrs['system_symbols']
+            p_dset = h5f['system']
+            p_dims = [p_dset['pair'][()].shape[0],
+                      p_dset['triplet'][()].shape[0]]
+            print(p_dims)
+        except KeyError:
+            p_dims = []
+
+        print(system_symbols)
+
         for j, s_name in enumerate(s_names):
             if 'coordinates' in s_dset[s_name].keys():
                 dset = s_dset[s_name]['coordinates']
-                present = list(dset.attrs.keys())
-                s_needed = ['natoms', 'property', 'symbol_set',
-                            'species_counts', 'unit', 'periodic']
-                if set(s_needed) == set(present):
+                keys_present = list(dset.attrs.keys())
+                keys_needed = ['natoms', 'property', 'symbol_set',
+                               'species_counts', 'unit', 'periodic']
+                missing_keys = set(keys_needed).difference(set(keys_present))
+
+                data = {}
+                for key in keys_needed:
+                    if key in missing_keys:
+                        data[key] = default_dict[key]
+                    else:
+                        data[key] = dset.attrs[key]
+
+                assertions = [data['natoms'] == sum(data['species_counts']),
+                              (set(data['symbol_set'])
+                               .issubset(set(system_symbols))),
+                              (len(data['species_counts'])
+                               == len(system_symbols)),
+                              data['unit'].shape == (3, 3)]
+                warnings = ['natoms and species_counts mismatch :'
+                            + str(data['natoms']) + ' ; '
+                            + str(sum(data['species_counts'])),
+                            'invalid elements ' + str(data['symbol_set']),
+                            'species counts mismatch '
+                            + str(len(data['species_counts'])),
+                            'unit cell bad shape: ' + str(data['unit'].shape)]
+                if all(assertions):
                     n_structures += 1
                 else:
-                    print(s_name, end='; ')
-            elif 'pairs' in s_dset[s_name].keys():
+                    print(s_name)
+                    print('missing attributes: ', ','.join(missing_keys))
+                    for k, err in enumerate(warnings):
+                        if not assertions[k]:
+                            print(err)
+            elif 'BP_g1' in s_dset[s_name].keys():
                 dset = s_dset[s_name]
-                present = list(dset.attrs.keys()) + list(dset.keys())
-                f_needed = ['natoms', 'property', 'symbol_set',
-                            'species_counts', 'pairs', 'triplets']
-                if set(f_needed) == set(present):
+                keys_present = list(dset.attrs.keys())
+                keys_needed = ['natoms', 'property', 'symbol_set',
+                               'species_counts']
+                missing_keys = set(keys_needed).difference(set(keys_present))
+
+                data = {}
+                for key in keys_needed:
+                    if key in missing_keys:
+                        data[key] = default_dict[key]
+                    else:
+                        data[key] = dset.attrs[key]
+
+                assertions = [data['natoms'] == sum(data['species_counts']),
+                              (set(data['symbol_set'])
+                               .issubset(set(system_symbols))),
+                              ((len(data['species_counts']) == len(
+                               system_symbols))),
+                              ([dset['BP_g1'][()].shape[-1],
+                                dset['BP_g2'][()].shape[-1]]) == p_dims]
+                warnings = ['natoms and species_counts mismatch :'
+                            + str(data['natoms']) + ' ; '
+                            + str(sum(data['species_counts'])),
+                            'invalid elements ' + str(
+                                data['symbol_set']),
+                            'species counts mismatch '
+                            + str(data['species_counts']),
+                            'descriptor dimension mismatch.']
+                if all(assertions):
                     n_fingerprints += 1
                 else:
-                    print(s_name, end='; ')
+                    print(s_name)
+                    print('missing attributes: ', ','.join(missing_keys))
+                    for k, err in enumerate(warnings):
+                        if not assertions[k]:
+                            print(err)
             else:
                 n_other += 1
-                print(s_name, end='; ')
+                print('\n' + s_name, end=';\n')
             print(n_structures, n_fingerprints, n_other, end='\r')
-        print(n_structures, n_fingerprints, n_other)
+        print('\n\n----\n', n_structures, n_fingerprints, n_other)
         return n_structures, n_fingerprints, n_other
 
 
@@ -646,40 +584,38 @@ if __name__ == '__main__':
 
     input_name = args.input
 
-    if args.action == 'represent':
-        if '.hdf5' not in input_name:
-            raise IOError('Expected .hdf5 input')
-        if args.output:
-            output_name = args.output
-            if '.hdf5' not in output_name:
-                output_name = output_name + '.hdf5'
-        else:
-            output_name = input_name + '_fingerprint.hdf5'
+    global t0
+    t0 = time.time()
 
-        t0 = time.time()
+    if args.action == 'represent':
+        if args.output:
+            output_name = (os.path.splitext(args.output)[0]
+                           + '_fingerprints.hdf5')
+        else:
+            output_name = (os.path.splitext(input_name)[0]
+                           .replace('_structures', '')
+                           + '_fingerprints.hdf5')
         parameters = read_parameters(args.input2)
         apply_descriptors(input_name, output_name, system_symbols, parameters,
                           descriptor=args.descriptor)
-        print(time.time() - t0, 'seconds elapsed.')
 
     elif args.action == 'parse':
         if args.output:
-            output_name = args.output
-            if '.hdf5' not in output_name:
-                output_name = output_name + '.hdf5'
+            output_name = (os.path.splitext(args.output)[0]
+                           + '_structures.hdf5')
         else:
-            output_name = input_name + '_structures.hdf5'
+            output_name = (os.path.splitext(input_name)[0]
+                           + '_structures.hdf5')
 
         loose = os.path.isdir(input_name)
         with open(args.input2, 'r') as propfile:
             proptext = propfile.read()
-        t0 = time.time()
         property_data = parse_property(proptext, loose=loose,
                                        keyword=args.keyword,
                                        index=args.index)
         # dictionary if loose, list otherwise
         structures_to_hdf5(input_name, output_name, system_symbols,
                            property_data, index=args.index, form=args.form)
-        print(time.time() - t0, 'seconds elapsed.')
     elif args.action == 'validate':
-        validate_hdf5(input_name)
+        validate_hdf5(input_name, system_symbols=system_symbols)
+    print(time.time() - t0, 'seconds elapsed.')
