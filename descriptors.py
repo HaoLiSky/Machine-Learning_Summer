@@ -140,7 +140,7 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         R_unitvecs = numpy.nan_to_num(R_unitvecs)
         ## the Einstein summation in the following line essentially performs the dot product Rij.Rik
         cosTheta = numpy.einsum('ijm,ikm->ijk', R_unitvecs, R_unitvecs)
-            
+        
         return cosTheta
     
     
@@ -380,16 +380,19 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             i_indices = [i for i in range(len(coords))]    
         
         R_vecs = coords - coords[i_indices,None]
-        
+
+        dcosTheta_dRml = (numpy.einsum('ijmld,ikd->ijkml', dRijvec_dRml, R_vecs)
+                                + numpy.einsum('ikmld,ijd->ijkml', dRijvec_dRml, R_vecs))
+
         ## the Einstein summation performs the dot products
         with numpy.errstate(divide='ignore', invalid='ignore'):
-            dcosTheta_dRml = ((numpy.einsum('ijmld,ikd->ijkml', dRijvec_dRml, R_vecs)
-                                + numpy.einsum('ikmld,ijd->ijkml', dRijvec_dRml, R_vecs))
+            dcosTheta_dRml = (dcosTheta_dRml
                                 / (R[i_indices,:,None,None,None]*R[i_indices,None,:,None,None])
                                 - (dRij_dRml[i_indices,:,None,:,:] / R[i_indices,:,None,None,None]
                                 + dRij_dRml[i_indices,None,:,:,:] / R[i_indices,None,:,None,None])
                                 * cosTheta[:,:,:,None,None])
-            
+        dcosTheta_dRml = numpy.nan_to_num(dcosTheta_dRml)
+
         return dcosTheta_dRml
 
 
@@ -493,7 +496,7 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
                      * (dfc_dRml[i_indices,:,None,:,:] * fc[i_indices,None,:,None,None] * fc[None,:,:,None,None] 
                       + dfc_dRml[i_indices,None,:,:,:] * fc[i_indices,:,None,None,None] * fc[None,:,:,None,None]
                       + dfc_dRml[None,:,:,:,:] * fc[i_indices,:,None,None,None] * fc[i_indices,None,:,None,None])))
-        
+                           
         totals = []
         for [ele1,ele2] in element_pairs:
             ## find the positions of all pairs of atoms of type (ele1,ele2)
@@ -508,105 +511,4 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         return totals
     
-
-#    def g_2(self, cosTheta, R, elements):
-#        
-#        """
-#        An angular symmetry function:
-#
-#            G^2_i = 2^{1-\zeta} \sum_{i,k \neq i}
-#                        (1 - \lambda \cos(\Theta_{ijk}))^\zeta
-#                        \exp(-\eta (R_{ij}^2 + R_{ik}^2 + R_{jk}^2))
-#                        f_c(R_{ij}) f_c(R_{ik}) f_c(R_{jk})
-#
-#        This function needs to be optimized.
-#
-#        Parameters
-#        ----------
-#        cosTheta : array, shape=(N_atoms, N_atoms, N_atoms)
-#            An array of cosines of triplet angles.
-#
-#        R : array, shape=(N_atoms, N_atoms)
-#            A distance matrix for all the atoms (scipy.spatial.cdist).
-#
-#        elements : list
-#            A list of all the elements in the molecule.
-#
-#        Returns
-#        -------
-#        total : array, shape=(N_atoms, len(self._element_pairs))
-#            The atom-wise g_2 evaluations.
-#            
-#        """
-#        
-#        F_c_R = self.fc(R)
-#
-#        R2 = self.eta * R ** 2
-#        new_Theta = (1 - self.lambda_ * cosTheta) ** self.zeta
-#
-#        get_index, length, _ = get_index_mapping(get_element_pairs(elements),2,False)
-#
-#        n = R.shape[0]
-#        values = numpy.zeros((n, length))
-#        for i in range(n):
-#            for j in range(n):
-#                if not F_c_R[i,j] or i == j:
-#                    continue
-#                ele1 = elements[j]
-#
-#                for k in range(n):
-#                    if k <= j or not F_c_R[i,k] or not F_c_R[j,k] or k == i:
-#                        continue
-#                    ele2 = elements[k]
-#                    eles = ele1, ele2
-#
-#                    temp = new_Theta[i,j,k] * numpy.exp(-(R2[i,j] + R2[i,k] + R2[j,k])) * F_c_R[i,j] * F_c_R[i,k] * F_c_R[j,k]
-#                    try:
-#                        values[i, get_index(eles)] += 2*temp
-#                    except KeyError:
-#                        pass
-#        
-#        return 2 ** (1 - self.zeta) * values
-
-
-#    def calculate_cosTheta(self, coords, R):
-#        
-#        """
-#        Compute the angular term for all triples of atoms:
-#
-#            cos(\Theta_{ijk}) = (R_{ij} . R_{ik}) / (|R_{ij}| |R_{ik}|)
-#
-#        Right now this is a fairly naive implementation so this could be
-#        optimized quite a bit.
-#
-#        Parameters
-#        ----------
-#        coords : array, shape=(N_atoms, 3)
-#            An array of the Cartesian coordinates of all the atoms
-#        
-#        R : array, shape=(N_atoms, N_atoms)
-#            A distance matrix for all the atoms (scipy.spatial.cdist).
-#
-#        Returns
-#        -------
-#        Theta : array, shape=(N_atoms, N_atoms, N_atoms)
-#            The angular term for all the atoms given.
-#            
-#        """
-#        
-#        n = coords.shape[0]
-#        cosTheta = numpy.zeros((n, n, n))
-#        for i, Ri in enumerate(coords):
-#            for j, Rj in enumerate(coords):
-#                if i == j:
-#                    continue
-#                Rij = Ri - Rj
-#                for k, Rk in enumerate(coords):
-#                    if j <= k or i == k:
-#                        continue
-#                    Rik = Ri - Rk
-#                    cosTheta_ijk = numpy.dot(Rij, Rik) / (R[i,j] * R[i,k])
-#                    cosTheta[i,j,k] = cosTheta_ijk 
-#                    cosTheta[i,k,j] = cosTheta_ijk 
-#                    
-#        return cosTheta
+    
