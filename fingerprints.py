@@ -58,7 +58,7 @@ def bp_fingerprint(s_data, parameters, system_symbols):
                                 [para_pairs, para_triplets])
 
     data = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
-    labels = ['BP_g1', 'BP_g2']
+    labels = ['G_1', 'G_2']
     fingerprints = zip(labels, data)
     return fingerprints
 
@@ -100,20 +100,23 @@ def represent_BP(coords, elements, parameters, periodic=False,
     bp._unitcell = indices_unitcell
 
     # compute the distances and angles once for every structure
+
     distmatrix = cdist(coords, coords)
-    cos_theta = bp.calculate_cosTheta(coords, distmatrix, periodic)
+    fc = bp.fc(distmatrix)
+    cos_theta = bp.cosTheta(coords, distmatrix, periodic)
 
     # loops over different sets of parameters, overwriting the values
     # that were used to initialize the class
     g_1 = []
     for para in para_pairs:
-        bp.r_cut, r_s, eta, lambda_, zeta = para
-        g_1.append(bp.g_1(distmatrix, elements, periodic))
+        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
+        g_1.append(bp.G1(fc=fc, R=distmatrix,
+                         elements=elements, periodic=periodic))
     g_2 = []
     for para in para_triplets:
-        bp.r_cut, r_s, eta, lambda_, zeta = para
-        g_2.append(bp.g_2(cos_theta, distmatrix, elements,
-                          periodic))
+        bp.r_cut, bp.r_s, bp.eta, bp.lambda_, bp.zeta = para
+        g_2.append(bp.G2(cosTheta=cos_theta, fc=fc, R=distmatrix,
+                         elements=elements, periodic=periodic))
 
     return (np.transpose(np.array(g_1), [2, 1, 0]),
             np.transpose(np.array(g_2), [2, 1, 0]))
