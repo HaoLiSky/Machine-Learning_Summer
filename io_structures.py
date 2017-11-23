@@ -41,7 +41,7 @@ def initialize_argparser():
     argparser.add_argument('input2',
                            help='filename of property data to parse \
                            or parameters to use in fingerprint')
-    argparser.add_argument('system_symbols',
+    argparser.add_argument('sys_elements',
                            help='comma-separated list of unique elements; \
                            e.g. "Au" or "Ba,Ti,O"')
     argparser.add_argument('-o', '--output',
@@ -56,10 +56,10 @@ def initialize_argparser():
     argparser.add_argument('-f', '--form',
                            help='file format for ase structure/molecule \
                            parsing. If unspecified, ASE will guess.')
-    argparser.add_argument('-d', '--descriptor', choices=['BP', 'dummy'],
+    argparser.add_argument('-d', '--descriptor', choices=['bp', 'dummy'],
                            default='dummy',
                            help='method of fingerprinting data; \
-                           default: placeholder (dummy)')
+                           default: dummy (placeholder mimicking BP)')
     return argparser
 
 
@@ -112,7 +112,7 @@ def slice_generator(generator, string):
     return islice(generator, *i)
 
 
-def read_parameters(para_file):
+def read_parameters(params_file):
     """
     Read parameter sets from file.
 
@@ -125,7 +125,7 @@ def read_parameters(para_file):
 
     """
 
-    with open(para_file, 'r') as fil:
+    with open(params_file, 'r') as fil:
         lines = fil.read().splitlines()
 
     pairs, triplets = [], []
@@ -176,7 +176,7 @@ def parse_property(data, loose=False, keyword=None, index=':'):
         index (str): Slice. Must match in parse_ase.
 
     Returns:
-        property_list: Property values as floats or dictionary of
+        energy_list: Property values as floats or dictionary of
             filename-value pairs if loose.
 
     """
@@ -184,25 +184,25 @@ def parse_property(data, loose=False, keyword=None, index=':'):
     if loose:
         parser = re.compile('([\w\._]+)(?:[=\s,:]+)(\S+)(?:[;,\s])')
         data_pairs = parser.findall(data)
-        property_list = {k: v for k, v in data_pairs}
+        energy_list = {k: v for k, v in data_pairs}
         # full dictionary, one value per structure file
-        return property_list
+        return energy_list
     else:
         if keyword:
             parser = re.compile('(?:' + keyword
                                 + '[=\s,:]*)([^;,\s]+)')
-            property_list = [float(match) for match in parser.findall(data)]
+            energy_list = [float(match) for match in parser.findall(data)]
 
         else:
             parser = re.compile('([^,;\s]+)(?:[,;\s])')
-            property_list = [float(match) for match in parser.findall(data)]
+            energy_list = [float(match) for match in parser.findall(data)]
             # list of values after slicing
             # assumed to match with ase.io.iread's slicing
-        return property_list[strslice(index)]
+        return energy_list[strslice(index)]
 
 
-def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
-                    property_value):
+def write_structure(h5f, structure, sys_elements, symbol_order, s_name,
+                    energy_val):
     """
 
     Writes one crystal/molecule object's data to .hdf5 file.
@@ -210,20 +210,20 @@ def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
     Args:
         h5f: h5py object for writing.
         structure: ASE Atoms object.
-        system_symbols: List of system-wide unique element names as strings.
+        sys_elements: List of system-wide unique element names as strings.
         symbol_order: Dictionary of elements and specified order.
         s_name (str): Atoms' identifier to use as group name.
-        property_value (float): Atoms' corresponding property value.
+        energy_val (float): Atoms' corresponding property value.
 
     """
     coords = structure.get_positions(wrap=False)
     natoms = len(coords)
     species = structure.get_chemical_symbols()
     symbol_set = list(set(species))
-    assert set(species).issubset(set(system_symbols))
+    assert set(species).issubset(set(sys_elements))
     species_counts = np.asarray([species.count(cspecie)
                                  for cspecie
-                                 in system_symbols]).astype('i4')
+                                 in sys_elements]).astype('i4')
     assert sum(species_counts) == natoms
     species, coords = zip(*sorted(zip(species, coords),
                                   key=lambda x: symbol_order.get(x[0])))
@@ -243,11 +243,11 @@ def write_structure(h5f, structure, system_symbols, symbol_order, s_name,
     dset_coords.attrs['species_counts'] = species_counts
     dset_coords.attrs['unit'] = unit
     dset_coords.attrs['periodic'] = periodic
-    dset_coords.attrs['property'] = property_value
+    dset_coords.attrs['energy'] = energy_val
 
 
-def structures_to_hdf5(input_name, output_name, system_symbols,
-                       property_data, index=':', form=None):
+def structures_to_hdf5(input_name, output_name, sys_elements,
+                       energy_data, index=':', form=None):
     """
 
     Parses crystal/molecule data and property data and writes to .hdf5 file.
@@ -264,18 +264,18 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
             crystal/molecule data.
         output_name (str): Filename for .hdf5.
         index (str): Slice. Must match in parse_property.
-        system_symbols: List of system-wide unique element names as strings.
+        sys_elements: List of system-wide unique element names as strings.
         form (str): Optional file format string to pass to ASE's read function.
-        property_data: List of property values as floats or
+        energy_data: List of property values as floats or
             dictionary of filename-value pairs if loose.
 
     """
     prefix = input_name.replace('.', '') + '_'
 
-    symbol_order = {k: v for v, k in enumerate(system_symbols)}
+    symbol_order = {k: v for v, k in enumerate(sys_elements)}
     with h5py.File(output_name, 'w', libver='latest') as h5f:
-        system_parameters = h5f.require_group('system')
-        system_parameters.attrs['system_symbols'] = np.string_(system_symbols)
+        sys_params = h5f.require_group('system')
+        sys_params.attrs['sys_elements'] = np.string_(sys_elements)
         s_count = len(h5f.require_group('structures').keys())
         s_count_start = s_count + 0
         print(str(s_count_start), 'structures to start')
@@ -293,14 +293,14 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
                     for structure in structures:
                         s_name = filename.replace('.', '') + '_' + str(s_count)
                         try:
-                            property_value = property_data[filename]
-                            write_structure(h5f, structure, system_symbols,
+                            energy_val = energy_data[filename]
+                            write_structure(h5f, structure, sys_elements,
                                             symbol_order, s_name,
-                                            property_value)
+                                            energy_val)
                             s_count += 1
                             print('read', s_count, end='\r')
                         except KeyError:
-                            print('no corresponding property_data:', s_name)
+                            print('no corresponding energy_data:', s_name)
                             continue
                         except AssertionError:
                             print('error in', s_name, end='\n\n')
@@ -311,12 +311,12 @@ def structures_to_hdf5(input_name, output_name, system_symbols,
             for structure in structures:
                 s_name = prefix + str(s_count)
                 try:
-                    property_value = property_data[s_count]
-                    write_structure(h5f, structure, system_symbols,
-                                    symbol_order, s_name, property_value)
+                    energy_val = energy_data[s_count]
+                    write_structure(h5f, structure, sys_elements,
+                                    symbol_order, s_name, energy_val)
                     s_count += 1
                 except IndexError:
-                    print('no corresponding property_data:', s_name)
+                    print('no corresponding energy_data:', s_name)
                     continue
                 except AssertionError:
                     print('error in', s_name, end='\n\n')
@@ -343,7 +343,7 @@ def read_structure(h5i, s_name):
         species_list: List of element namestring for each atom.
         unit (3x3 numpy array): Atoms' unit cell vectors (zeros if molecule).
         periodic: True if crystal.
-        property_value (float): Corresponding property value.
+        energy_val (float): Corresponding property value.
 
     """
     dset = h5i['structures'][s_name]['coordinates']
@@ -358,14 +358,14 @@ def read_structure(h5i, s_name):
     assert len(species_list) == len(coords)
     unit = dset.attrs['unit']
     periodic = dset.attrs['periodic']
-    property_value = dset.attrs['property']
+    energy_val = dset.attrs['energy']
 
     return [coords, symbol_set, species_counts,
-            species_list, unit, periodic, property_value]
+            species_list, unit, periodic, energy_val]
 
 
 def make_fingerprint(h5o, s_data, s_name, parameters,
-                     system_symbols, descriptor='dummy'):
+                     sys_elements, descriptor='dummy'):
     """
 
     Reads data for one crystal/molecule and corresponding property data
@@ -376,18 +376,18 @@ def make_fingerprint(h5o, s_data, s_name, parameters,
         s_data: List of data (output of read_structure).
         s_name (str): Atoms' identifier to be used as group name in h5o.
         parameters: Descriptor parameters.
-        system_symbols: List of system-wide unique element names as strings.
+        sys_elements: List of system-wide unique element names as strings.
         descriptor: Descriptor to use.
 
     """
     if descriptor == 'dummy':
         inputs = dummy_fingerprint(s_data, parameters,
-                                   system_symbols)
+                                   sys_elements)
     elif descriptor == 'BP':
-        inputs = bp_fingerprint(s_data, parameters, system_symbols)
+        inputs = bp_fingerprint(s_data, parameters, sys_elements)
 
     (coords, symbol_set, species_counts,
-     species_list, unit, periodic, property_value) = s_data
+     species_list, unit, periodic, energy_val) = s_data
 
     for label, term in inputs:
         dname = 'structures/{}/{}'.format(s_name, label)
@@ -396,10 +396,10 @@ def make_fingerprint(h5o, s_data, s_name, parameters,
     h5o['structures'][s_name].attrs['natoms'] = len(coords)
     h5o['structures'][s_name].attrs['symbol_set'] = np.string_(symbol_set)
     h5o['structures'][s_name].attrs['species_counts'] = species_counts
-    h5o['structures'][s_name].attrs['property'] = property_value
+    h5o['structures'][s_name].attrs['energy'] = energy_val
 
 
-def apply_descriptors(input_name, output_name, system_symbols, parameters,
+def apply_descriptors(input_name, output_name, sys_elements, parameters,
                       descriptor='PH'):
     """
 
@@ -411,7 +411,7 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
         parameters : List of descriptor parameters.
         output_name (str): Filename of .hdf5 for writing fingerprint data.
         descriptor (str): Descriptor to use to represent crystal/molecule data.
-        system_symbols: List of system-wide unique element names as strings.
+        sys_elements: List of system-wide unique element names as strings.
 
     """
 
@@ -425,7 +425,7 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
                                parameters[1].shape,
                                data=parameters[1], dtype='f4',
                                compression="gzip")
-            h5o['system'].attrs['system_symbols'] = np.string_(system_symbols)
+            h5o['system'].attrs['sys_elements'] = np.string_(sys_elements)
             s_names = list(h5i.require_group('structures').keys())
             s_tot = len(s_names)
             s_count = 0
@@ -436,7 +436,7 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
                 try:
                     s_data = read_structure(h5i, s_name)
                     make_fingerprint(h5o, s_data, s_name, parameters,
-                                     system_symbols, descriptor=descriptor)
+                                     sys_elements, descriptor=descriptor)
                     s_count += 1
                 except AssertionError:
                     print('error in', s_name, end='\n\n')
@@ -448,7 +448,7 @@ def apply_descriptors(input_name, output_name, system_symbols, parameters,
                 print(str(f_count), 'fingerprint(s) failed')
 
 
-def validate_hdf5(filename, system_symbols=[]):
+def validate_hdf5(filename, sys_elements=[]):
     """
 
     Check .hdf5 integrity for structures or fingerprints.
@@ -457,7 +457,7 @@ def validate_hdf5(filename, system_symbols=[]):
 
     Args:
         filename: Filename of .hdf5
-        system_symbols: Optional argument, in case it cannot be read from
+        sys_elements: Optional argument, in case it cannot be read from
         the file.
 
     Returns:
@@ -467,12 +467,13 @@ def validate_hdf5(filename, system_symbols=[]):
 
     """
     default_dict = {'natoms': 0,
-                    'property': 0,
+                    'energy': 0,
                     'symbol_set': [],
                     'species_counts': [0],
                     'unit': [],
                     'periodic': False}
-    system_symbols = [np.string_(x) for x in system_symbols]
+    sys_elements = [np.string_(x) for x in sys_elements]
+    comp_coeff_list = []
     with h5py.File(filename, 'r', libver='latest') as h5f:
         s_names = list(h5f.require_group('structures').keys())
         n_structures = 0
@@ -480,7 +481,7 @@ def validate_hdf5(filename, system_symbols=[]):
         n_other = 0
         s_dset = h5f['structures']
         try:
-            system_symbols = h5f['system'].attrs['system_symbols']
+            sys_elements = h5f['system'].attrs['sys_elements']
             p_dset = h5f['system']
             p_dims = [p_dset['pair'][()].shape[0],
                       p_dset['triplet'][()].shape[0]]
@@ -488,13 +489,13 @@ def validate_hdf5(filename, system_symbols=[]):
         except KeyError:
             p_dims = []
 
-        print(system_symbols)
+        print(sys_elements)
 
         for j, s_name in enumerate(s_names):
             if 'coordinates' in s_dset[s_name].keys():
                 dset = s_dset[s_name]['coordinates']
                 keys_present = list(dset.attrs.keys())
-                keys_needed = ['natoms', 'property', 'symbol_set',
+                keys_needed = ['natoms', 'energy', 'symbol_set',
                                'species_counts', 'unit', 'periodic']
                 missing_keys = set(keys_needed).difference(set(keys_present))
 
@@ -507,9 +508,9 @@ def validate_hdf5(filename, system_symbols=[]):
 
                 assertions = [data['natoms'] == sum(data['species_counts']),
                               (set(data['symbol_set'])
-                               .issubset(set(system_symbols))),
+                               .issubset(set(sys_elements))),
                               (len(data['species_counts'])
-                               == len(system_symbols)),
+                               == len(sys_elements)),
                               data['unit'].shape == (3, 3)]
                 warnings = ['natoms and species_counts mismatch :'
                             + str(data['natoms']) + ' ; '
@@ -520,6 +521,7 @@ def validate_hdf5(filename, system_symbols=[]):
                             'unit cell bad shape: ' + str(data['unit'].shape)]
                 if all(assertions):
                     n_structures += 1
+                    comp_coeff_list.append(data['species_counts'])
                 else:
                     print(s_name)
                     print('missing attributes: ', ','.join(missing_keys))
@@ -529,7 +531,7 @@ def validate_hdf5(filename, system_symbols=[]):
             elif 'BP_g1' in s_dset[s_name].keys():
                 dset = s_dset[s_name]
                 keys_present = list(dset.attrs.keys())
-                keys_needed = ['natoms', 'property', 'symbol_set',
+                keys_needed = ['natoms', 'energy', 'symbol_set',
                                'species_counts']
                 missing_keys = set(keys_needed).difference(set(keys_present))
 
@@ -539,12 +541,13 @@ def validate_hdf5(filename, system_symbols=[]):
                         data[key] = default_dict[key]
                     else:
                         data[key] = dset.attrs[key]
+                Expected_shape
 
                 assertions = [data['natoms'] == sum(data['species_counts']),
                               (set(data['symbol_set'])
-                               .issubset(set(system_symbols))),
+                               .issubset(set(sys_elements))),
                               ((len(data['species_counts']) == len(
-                               system_symbols))),
+                               sys_elements))),
                               ([dset['BP_g1'][()].shape[-1],
                                 dset['BP_g2'][()].shape[-1]]) == p_dims]
                 warnings = ['natoms and species_counts mismatch :'
@@ -556,6 +559,7 @@ def validate_hdf5(filename, system_symbols=[]):
                             + str(data['species_counts']),
                             'descriptor dimension mismatch.']
                 if all(assertions):
+                    comp_coeff_list.append(data['species_counts'])
                     n_fingerprints += 1
                 else:
                     print(s_name)
@@ -567,6 +571,14 @@ def validate_hdf5(filename, system_symbols=[]):
                 n_other += 1
                 print('\n' + s_name, end=';\n')
             print(n_structures, n_fingerprints, n_other, end='\r')
+        comp_coeffs = np.asarray(comp_coeff_list)
+        max_each = np.amax(comp_coeffs, axis=0)
+        sums = np.sum(comp_coeffs, axis=1)
+        largest_struct = comp_coeffs[np.argmax(sums), :]
+        smallest_struct = comp_coeffs[np.argmin(sums), :]
+        print('Maximum atoms of each element type:', max_each)
+        print('Largest structure:', largest_struct)
+        print('Smallest Structure:', smallest_struct)
         print('\n\n----\n', n_structures, n_fingerprints, n_other)
         return n_structures, n_fingerprints, n_other
 
@@ -575,9 +587,9 @@ if __name__ == '__main__':
     argparser = initialize_argparser()
     args = argparser.parse_args()
 
-    system_symbols = args.system_symbols.split(',')
-    if not len(system_symbols) == len(set(list(system_symbols))):
-        raise ValueError('duplicate elements in symbol_set: ' + system_symbols)
+    sys_elements = args.sys_elements.split(',')
+    if not len(sys_elements) == len(set(list(sys_elements))):
+        raise ValueError('duplicate elements in symbol_set: ' + sys_elements)
 
     if ':' not in args.index:
         raise ValueError('invalid slice specified: ' + args.index)
@@ -596,7 +608,7 @@ if __name__ == '__main__':
                            .replace('_structures', '')
                            + '_fingerprints.hdf5')
         parameters = read_parameters(args.input2)
-        apply_descriptors(input_name, output_name, system_symbols, parameters,
+        apply_descriptors(input_name, output_name, sys_elements, parameters,
                           descriptor=args.descriptor)
 
     elif args.action == 'parse':
@@ -610,12 +622,12 @@ if __name__ == '__main__':
         loose = os.path.isdir(input_name)
         with open(args.input2, 'r') as propfile:
             proptext = propfile.read()
-        property_data = parse_property(proptext, loose=loose,
+        energy_data = parse_property(proptext, loose=loose,
                                        keyword=args.keyword,
                                        index=args.index)
         # dictionary if loose, list otherwise
-        structures_to_hdf5(input_name, output_name, system_symbols,
-                           property_data, index=args.index, form=args.form)
+        structures_to_hdf5(input_name, output_name, sys_elements,
+                           energy_data, index=args.index, form=args.form)
     elif args.action == 'validate':
-        validate_hdf5(input_name, system_symbols=system_symbols)
+        validate_hdf5(input_name, sys_elements=sys_elements)
     print(time.time() - t0, 'seconds elapsed.')
