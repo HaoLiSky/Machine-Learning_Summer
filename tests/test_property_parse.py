@@ -4,7 +4,7 @@ Test case is 10 property values; keyword is 'E0', like in VASP OSZICAR files.
 """
 import unittest
 import numpy as np
-from representation import parse_property
+from io_structures import parse_property
 
 
 class PropertyParseTestCase(unittest.TestCase):
@@ -12,7 +12,7 @@ class PropertyParseTestCase(unittest.TestCase):
         """
         Generate text with embedded property values for both cases.
         """
-        n = 10
+        n = 100
         self.keyword = 'E0'
         self.props = np.subtract(np.multiply(np.random.rand(n, ),
                                              10000), 5000)
@@ -36,12 +36,12 @@ class PropertyParseTestCase(unittest.TestCase):
                                 for prop in self.props])
 
     def test_parse_property(self):
-        self.parsed = np.asarray(parse_property(self.text_l))
+        self.parsed = [float(x) for x in parse_property(self.text_l)]
         self.assertTrue(np.all(np.isclose(self.parsed, self.props, atol=1e-4)))
 
     def test_parse_property_kw(self):
-        self.parsed = np.asarray(parse_property(self.text_kw,
-                                                keyword=self.keyword))
+        self.parsed = [float(x) for x in parse_property(self.text_kw,
+                                                        keyword=self.keyword)]
         self.assertTrue(np.all(np.isclose(self.parsed, self.props, atol=1e-4)))
 
 

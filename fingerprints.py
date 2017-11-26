@@ -21,7 +21,7 @@ def bp_fingerprint(s_data, parameters, system_symbols):
     fingerprints are padded.
 
     Args:
-        s_data: List of data (output of read_structure).
+        s_data: List of data (output of read_collated_structure).
         parameters: Descriptor parameters.
         system_symbols: List of system-wide unique element names as strings.
 
@@ -60,7 +60,7 @@ def bp_fingerprint(s_data, parameters, system_symbols):
     data = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
     labels = ['G_1', 'G_2']
     fingerprints = zip(labels, data)
-    return fingerprints
+    return fingerprints, [x.shape for x in data]
 
 
 def represent_BP(coords, elements, parameters, periodic=False,
@@ -157,7 +157,7 @@ def dummy_fingerprint(s_data, parameters, system_symbols):
     """
 
     Args:
-        s_data: List of data (output of read_structure).
+        s_data: List of data (output of read_collated_structure).
         parameters: Descriptor parameters.
         system_symbols: List of system-wide unique element names as strings.
 
@@ -166,49 +166,25 @@ def dummy_fingerprint(s_data, parameters, system_symbols):
      species_list, unit, periodic, property_value) = s_data
     assert set(symbol_set).issubset(set(system_symbols))
     para_pairs, para_triplets = parameters
+
     n_atoms = len(coords)
-    n_species = len(symbol_set)
-    pair_num = len(list(combinations_with_replacement(range(n_species), 1)))
-    triplet_num = len(list(combinations_with_replacement(range(n_species),
+    pair_num = len(list(combinations_with_replacement(symbol_set, 1)))
+    triplet_num = len(list(combinations_with_replacement(symbol_set,
                                                          2)))
+    para_num_1 = para_pairs.shape[0]
+    para_num_2 = para_triplets.shape[0]
 
-    coord_sums = np.sum(coords, axis=1)
-    # sum of coordinates for each atom
+    g_1 = np.zeros(shape=(n_atoms, pair_num, para_num_1))
+    g_2 = np.zeros(shape=(n_atoms, triplet_num, para_num_2))
 
-    pair_factors = np.random.rand(pair_num, 1)
-    # 1 factor per pair interaction (specie in sphere)
-    para_factors_1 = np.sum(para_pairs, axis=0)
-    para_num_1 = len(para_factors_1)
-    # 1 factor per parameter set
-    tile_atoms_1 = np.tile(coord_sums.reshape(n_atoms, 1, 1),
-                           (1, pair_num, para_num_1))
-    tile_inter_1 = np.tile(pair_factors.reshape(1, pair_num, 1),
-                           (n_atoms, 1, para_num_1))
-    tile_parameters_1 = np.tile(para_factors_1.reshape(1, 1, para_num_1),
-                                (n_atoms, pair_num, 1))
-    g_1 = np.multiply(np.multiply(tile_atoms_1, tile_inter_1),
-                      tile_parameters_1)
     # g_1.shape ~ (#atoms x #species x #pair_parameters)
-    triplet_factors = np.random.rand(triplet_num, 1)
-    # 1 factor per triplet interaction (2 species in sphere)
-    para_factors_2 = np.sum(para_triplets, axis=0)
-    para_num_2 = len(para_factors_2)
-    # 1 factor per parameter set
-    tile_atoms_2 = np.tile(coord_sums.reshape(n_atoms, 1, 1),
-                           (1, triplet_num, para_num_2))
-    tile_inter_2 = np.tile(triplet_factors.reshape(1, triplet_num, 1),
-                           (n_atoms, 1, para_num_2))
-    tile_parameters_2 = np.tile(para_factors_2.reshape(1, 1, para_num_2),
-                                (n_atoms, triplet_num, 1))
-    g_2 = np.multiply(np.multiply(tile_atoms_2, tile_inter_2),
-                      tile_parameters_2)
     # g_2.shape ~ (#atoms x
     #              [#combinations of species with replacement] x
     #              #triplet_parameters
     data = pad_fingerprints([g_1, g_2], symbol_set, system_symbols, [1, 2])
     labels = ['dummy_pairs', 'dummy_triplets']
     fingerprints = zip(labels, data)
-    return fingerprints
+    return fingerprints, [x.shape for x in data]
 
 
 def pad_fingerprints(terms, symbol_set, system_symbols, dims):

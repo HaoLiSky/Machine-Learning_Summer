@@ -9,11 +9,12 @@ Parameters used: 5 per set; 4 pairwise sets, 6 triplet sets.
 """
 import unittest
 import os
-import ase
-import ase.io as ase_io
 import h5py
 import numpy as np
-from representation import structures_to_hdf5, apply_descriptors
+from io_structures import collate_structures
+from io_fingerprints import apply_descriptors
+from framework_cli import validate_hdf5
+from test_utils import generate_random_cif
 
 
 class ApplyFingerprintsTestCase(unittest.TestCase):
@@ -21,80 +22,48 @@ class ApplyFingerprintsTestCase(unittest.TestCase):
         """
         Generate temp .cif and intermediate .hdf5 file of structures.
         """
+        self.descriptor = 'bp'
+
         self.n = 10
-        self.system_symbols = ['Ba', 'Ti', 'O']
-        self.descriptor = 'PH'
-        self.n_elements = 3
-        self.max_per_element = [10, 20, 30]
+        self.sys_elements = ['Ba', 'Ti', 'O']
+        self.max_per_element = [2, 4, 6]
         self.cell_length = 5
+
+        self.tempfilename = 'test_{}.cif'.format(''.join(self.sys_elements))
+        self.natoms_list = generate_random_cif(self.tempfilename,
+                                               self.sys_elements,
+                                               self.max_per_element,
+                                               self.cell_length, self.n)
+
         self.property_data = np.random.rand(self.n, )
-        self.comp_coeff = np.zeros((self.n, self.n_elements), dtype='i4')
-        for s, nmax in enumerate(self.max_per_element):
-            while True:
-                self.comp_coeff[:, s] = np.random.randint(nmax + 1,
-                                                          size=(self.n,))
-                if np.sum(self.comp_coeff[:, s]) > 0:
-                    break
-                    # random number of atoms of each species per structure
-        self.natoms_list = np.sum(self.comp_coeff, axis=1)
-        self.coords_list = []
-        for natoms in self.natoms_list:
-            coords = np.zeros(shape=(natoms, 3))
-            for atom in range(natoms):
-                while True:
-                    proposed = np.random.rand(1, 3)
-                    if not np.any([np.allclose(proposed, x, atol=0.01)
-                                   for x in coords]):
-                        coords[atom, :] = proposed
-                        break
-            self.coords_list.append(np.add(np.multiply(coords,
-                                                       self.cell_length - 2),
-                                           1))
-        self.species_list_list = []
-        self.symbol_set_list = []
-        for species_counts in self.comp_coeff:
-            species_list = []
-            for symbol, ccount in zip(self.system_symbols, species_counts):
-                species_list += [symbol] * ccount
-            self.species_list_list.append(species_list)
-            self.symbol_set_list.append(list(set(species_list)))
-        self.unit = np.asarray([[self.cell_length, 0, 0],
-                                [0, self.cell_length, 0],
-                                [0, 0, self.cell_length]])
-        self.periodic = True
-        self.structure_list = [ase.Atoms(''.join(species_list),
-                                         positions=coords,
-                                         cell=self.unit,
-                                         pbc=self.periodic)
-                               for species_list, coords
-                               in
-                               zip(self.species_list_list, self.coords_list)]
-        ase_io.write('test.cif', self.structure_list, format='cif')
-        structures_to_hdf5('test.cif', 'structure.test.hdf5',
-                           self.system_symbols, self.property_data, form='cif')
-        self.dim_1 = [(natoms, 3, 4) for natoms in self.natoms_list]
-        self.dim_2 = [(natoms, 6, 6) for natoms in self.natoms_list]
-        self.n_structures_test = True
-        self.natoms_test = True
-        self.symbols_test = True
-        self.num_elem_test = True
+        self.property_data_pass = [str(x) for x in self.property_data]
+        self.prop_test = True
+
+        collate_structures(self.tempfilename, 'structure.test.hdf5',
+                           self.sys_elements, self.property_data_pass,
+                           form='cif')
+        validate_hdf5('structure.test.hdf5')
+        self.dim_data = np.asarray([[natoms, 3, 1, 6, 1]
+                                    for natoms in self.natoms_list])
         self.prop_test = True
         self.dim_test = True
-        self.parameters = (np.random.rand(5, 4), np.random.rand(5, 6))
+        self.parameters = (np.asarray([(6, 1, 1, 1, 1)]),
+                           np.asarray([(6, 1, 1, 1, 1)]))
 
     def tearDown(self):
         """
         Remove temp files.
         """
-        os.remove('test.cif')
+        os.remove(self.tempfilename)
         os.remove('structure.test.hdf5')
         os.remove('fingerprint.test.hdf5')
 
     def test_structures_to_hdf5(self):
         apply_descriptors('structure.test.hdf5', 'fingerprint.test.hdf5',
-                          self.system_symbols, self.parameters,
+                          self.sys_elements, self.parameters,
                           descriptor=self.descriptor)
-
+        num_fingerprints = validate_hdf5('fingerprint.test.hdf5')[1]
+        self.validation_test = (num_fingerprints == self.n)
         with h5py.File('fingerprint.test.hdf5', 'r', libver='latest') as h5f:
             s_names = sorted(list(h5f['structures'].keys()),
                              key=lambda x: int(x.split('_')[-1]))
@@ -102,28 +71,22 @@ class ApplyFingerprintsTestCase(unittest.TestCase):
             structures_dset = h5f['structures']
             for j, s_name in enumerate(s_names):
                 dset = structures_dset[s_name]
-                g_1 = structures_dset[s_name]['pairs'][()]
-                g_2 = structures_dset[s_name]['triplets'][()]
-                if (not self.dim_1[j] == g_1.shape
-                   or not self.dim_2[j] == g_2.shape):
+                g_1, g_2 = [dset[x][()] for x in list(dset.keys())][:2]
+                dset_dims = [g_1.shape[0], g_1.shape[1], g_1.shape[2],
+                             g_2.shape[1], g_2.shape[2]]
+                dim_search = np.isclose(self.dim_data[:, None],
+                                        dset_dims,
+                                        atol=0).all(-1)
+                if not np.any(dim_search):
                     self.dim_test = False
-                if not self.natoms_list[j] == dset.attrs['natoms']:
-                    self.natoms_test = False
-                if not np.isclose(self.property_data[j],
-                                  dset.attrs['property'], atol=1e-4):
-                    self.prop_test = False
-                if not self.symbol_set_list[j] == [x.decode('utf-8')
-                                                   for x in
-                                                   dset.attrs['symbol_set']]:
-                    self.symbols_test = False
-                if not np.allclose(self.comp_coeff[j, :],
-                                   dset.attrs['species_counts']):
-                    self.num_elem_test = False
 
-        self.s_tests = [self.n_structures_test,
-                        self.natoms_test,
-                        self.symbols_test,
-                        self.num_elem_test,
+                energy_search = np.isclose(self.property_data[:, None],
+                                           float(dset.attrs['energy']),
+                                           atol=1e-4).all(-1)
+                if not np.any(energy_search):
+                    self.prop_test = False
+
+        self.s_tests = [self.validation_test,
                         self.dim_test,
                         self.prop_test]
         self.assertTrue(np.all(self.s_tests))
