@@ -128,15 +128,11 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         """
         
-        if periodic == False:
-            coordsi = coords
-        elif periodic == True: 
-            coordsi = coords[self._unitcell]
-            R = R[self._unitcell,:]
+        N_unit = self._N_unitcell
         
-        R_vecs = coords - coordsi[:,None]
+        R_vecs = coords - coords[:N_unit,None]
         with numpy.errstate(divide='ignore', invalid='ignore'):
-            R_unitvecs = R_vecs / R[:,:,None]
+            R_unitvecs = R_vecs / R[:N_unit,:,None]
         R_unitvecs = numpy.nan_to_num(R_unitvecs)
         ## the Einstein summation in the following line essentially performs the dot product Rij.Rik
         cosTheta = numpy.einsum('ijm,ikm->ijk', R_unitvecs, R_unitvecs)
@@ -167,14 +163,11 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         """
         
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(len(elements))]
+        N_unit = self._N_unitcell
         
         elements = numpy.array(elements)
         
-        values = numpy.exp(-self.eta * (R[i_indices,:] - self.r_s) ** 2) * fc[i_indices,:]       
+        values = numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2) * fc[:N_unit,:]       
         
         totals = []
         for ele in numpy.unique(sorted(elements)):
@@ -216,19 +209,16 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         """
         
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(len(elements))]
+        N_unit = self._N_unitcell
         
         elements = numpy.array(elements)
         element_pairs = sorted(numpy.array(get_element_pairs(elements)),key=lambda x: (x[0],x[1]))
         
         values = (2 ** (1 - self.zeta) * (1 + self.lambda_ * cosTheta) ** self.zeta 
-                  * numpy.exp(-self.eta * R[i_indices,:,None]**2)
-                  * numpy.exp(-self.eta * R[i_indices,None,:]**2) 
+                  * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
+                  * numpy.exp(-self.eta * R[:N_unit,None,:]**2) 
                   * numpy.exp(-self.eta * R[None,:,:]**2)
-                  * fc[i_indices,:,None] * fc[i_indices,None,:] * fc[None,:,:])
+                  * fc[:N_unit,:,None] * fc[:N_unit,None,:] * fc[None,:,:])
 
         totals = []
         for [ele1,ele2] in element_pairs:
@@ -267,24 +257,23 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         
         """
         
-        if periodic == True:
-            m_indices = self._unitcell
-        elif periodic == False:
-            m_indices = [m for m in range(len(coords))]    
+        N_unit = self._N_unitcell
         
-        deltajm_delta_im = (numpy.eye(len(coords))[None,:,m_indices]
-                            - numpy.eye(len(coords))[:,None,m_indices])
+        ## construct the identity matrices first with all atoms in the i and m dimensions
+        ## then pick out the relevant slices in the i and m dimensions which correspond to "central" atoms
+        deltajm_deltaim = (numpy.eye(len(coords))[None,:,:N_unit]
+                            - numpy.eye(len(coords))[:,None,:N_unit])
 
         with numpy.errstate(divide='ignore', invalid='ignore'):
             R_inverse = 1./R
         R_inverse = numpy.nan_to_num(R_inverse)
         
-        dRij_dRml = deltajm_delta_im[:,:,:,None] * (coords[None,:,None,:] - coords[:,None,None,:]) * R_inverse[:,:,None,None]
+        dRij_dRml = deltajm_deltaim[:,:,:,None] * (coords[None,:,None,:] - coords[:,None,None,:]) * R_inverse[:,:,None,None]
         
         return dRij_dRml
 
 
-    def dRijvec_dRml(self, N_atoms, periodic=False):
+    def dRijvec_dRml(self, N_tot, periodic=False):
         
         """
         Computes the derivative of the position vector R_{ij}
@@ -294,7 +283,7 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
     
         Parameters
         ----------
-        N_atoms: total number of atoms
+        N_tot: total number of atoms
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
     
         Returns
@@ -303,19 +292,15 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         Access the derivatives by indexing dRijvec_dRml[i,j,m,l] which returns a vector
         
         """
-        
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(N_atoms)]
-        j_indices = [i for i in range(N_atoms)]
+
+        N_unit = self._N_unitcell
 
         ## construct the identity matrices first with all atoms in the i and m dimensions
         ## then pick out the relevant slices in the i and m dimensions which correspond to "central" atoms
-        deltajm_delta_im = (numpy.eye(len(j_indices))[[[j] for j in j_indices],i_indices][None,:,:]
-                            - numpy.eye(len(j_indices))[[[i] for i in i_indices],i_indices][:,None,:])
+        deltajm_deltaim = (numpy.eye(N_tot)[:,:N_unit][None,:,:]
+                            - numpy.eye(N_tot)[:N_unit,:N_unit][:,None,:])
         
-        dRijvec_dRml = deltajm_delta_im[:,:,:,None,None] * numpy.eye(3)[None,None,None,:,:]
+        dRijvec_dRml = deltajm_deltaim[:,:,:,None,None] * numpy.eye(3)[None,None,None,:,:]
         
         return dRijvec_dRml
 
@@ -373,13 +358,10 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         Access the derivatives by indexing dcosTheta_dRml[i,j,k,m,l] which returns a scalar
         
         """
-            
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(len(coords))]    
         
-        R_vecs = coords - coords[i_indices,None]
+        N_unit = self._N_unitcell
+        
+        R_vecs = coords - coords[:N_unit,None]
 
         dcosTheta_dRml = (numpy.einsum('ijmld,ikd->ijkml', dRijvec_dRml, R_vecs)
                                 + numpy.einsum('ikmld,ijd->ijkml', dRijvec_dRml, R_vecs))
@@ -387,9 +369,9 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         ## the Einstein summation performs the dot products
         with numpy.errstate(divide='ignore', invalid='ignore'):
             dcosTheta_dRml = (dcosTheta_dRml
-                                / (R[i_indices,:,None,None,None]*R[i_indices,None,:,None,None])
-                                - (dRij_dRml[i_indices,:,None,:,:] / R[i_indices,:,None,None,None]
-                                + dRij_dRml[i_indices,None,:,:,:] / R[i_indices,None,:,None,None])
+                                / (R[:N_unit,:,None,None,None]*R[:N_unit,None,:,None,None])
+                                - (dRij_dRml[:N_unit,:,None,:,:] / R[:N_unit,:,None,None,None]
+                                + dRij_dRml[:N_unit,None,:,:,:] / R[:N_unit,None,:,None,None])
                                 * cosTheta[:,:,:,None,None])
         dcosTheta_dRml = numpy.nan_to_num(dcosTheta_dRml)
 
@@ -422,15 +404,13 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         """
         
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(len(elements))]
+        N_unit = self._N_unitcell
         
         elements = numpy.array(elements)
         
-        values = ((dRij_dRml[i_indices,:,:,:] * (-2*self.eta * (R[i_indices,:] - self.r_s) * fc[i_indices,:])[:,:,None,None]
-                    + dfc_dRml[i_indices,:,:,:]) * numpy.exp(-self.eta * (R[i_indices,:] - self.r_s) ** 2)[:,:,None,None])   
+        values = ((dRij_dRml[:N_unit,:,:,:] * (-2*self.eta * (R[:N_unit,:] - self.r_s) * fc[:N_unit,:])[:,:,None,None]
+                    + dfc_dRml[:N_unit,:,:,:])
+                    * numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2)[:,:,None,None])   
         
         totals = []
         for ele in numpy.unique(sorted(elements)):
@@ -474,28 +454,25 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             
         """
         
-        if periodic == True:
-            i_indices = self._unitcell
-        elif periodic == False:
-            i_indices = [i for i in range(len(elements))]
+        N_unit = self._N_unitcell
         
         elements = numpy.array(elements)
         element_pairs = sorted(numpy.array(get_element_pairs(elements)),key=lambda x: (x[0],x[1])) 
         
         values = (2 ** (1 - self.zeta) * ((1 + self.lambda_ * cosTheta) ** (self.zeta - 1)
-                  * numpy.exp(-self.eta * R[i_indices,:,None]**2)
-                  * numpy.exp(-self.eta * R[i_indices,None,:]**2) 
+                  * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
+                  * numpy.exp(-self.eta * R[:N_unit,None,:]**2) 
                   * numpy.exp(-self.eta * R[None,:,:]**2))[:,:,:,None,None]
-                  * (fc[i_indices,:,None,None,None] * fc[i_indices,None,:,None,None] * fc[None,:,:,None,None]
+                  * (fc[:N_unit,:,None,None,None] * fc[:N_unit,None,:,None,None] * fc[None,:,:,None,None]
                      * (self.lambda_ * self.zeta * dcosTheta_dRml 
                         - 2*self.eta * (1 + self.lambda_ * cosTheta[:,:,:,None,None])
-                         * (R[i_indices,:,None,None,None] * dRij_dRml[i_indices,:,None,:,:]
-                          + R[i_indices,None,:,None,None] * dRij_dRml[i_indices,None,:,:,:]
+                         * (R[:N_unit,:,None,None,None] * dRij_dRml[:N_unit,:,None,:,:]
+                          + R[:N_unit,None,:,None,None] * dRij_dRml[:N_unit,None,:,:,:]
                           + R[None,:,:,None,None] * dRij_dRml[None,:,:,:,:]))
                   + (1 + self.lambda_ * cosTheta[:,:,:,None,None])
-                     * (dfc_dRml[i_indices,:,None,:,:] * fc[i_indices,None,:,None,None] * fc[None,:,:,None,None] 
-                      + dfc_dRml[i_indices,None,:,:,:] * fc[i_indices,:,None,None,None] * fc[None,:,:,None,None]
-                      + dfc_dRml[None,:,:,:,:] * fc[i_indices,:,None,None,None] * fc[i_indices,None,:,None,None])))
+                     * (dfc_dRml[:N_unit,:,None,:,:] * fc[:N_unit,None,:,None,None] * fc[None,:,:,None,None] 
+                      + dfc_dRml[:N_unit,None,:,:,:] * fc[:N_unit,:,None,None,None] * fc[None,:,:,None,None]
+                      + dfc_dRml[None,:,:,:,:] * fc[:N_unit,:,None,None,None] * fc[:N_unit,None,:,None,None])))
                            
         totals = []
         for [ele1,ele2] in element_pairs:
