@@ -61,6 +61,10 @@ def initialize_argparser():
                            default='dummy',
                            help='method of fingerprinting data; \
                            default: dummy (placeholder mimicking BP)')
+    argparser.add_argument('-p', '--primes', action='store_true',
+                           help='whether to calculate derivatives of \
+                                 fingerprints with respect to the \
+                                 cartesian coordinates; default: False')
     return argparser
 
 
@@ -232,7 +236,8 @@ if __name__ == '__main__':
                            + '_fingerprints.hdf5')
         parameters = read_parameters_from_file(args.input2)
         apply_descriptors(input_name, output_name, sys_elements, parameters,
-                          descriptor=args.descriptor)
+                          index=args.index, descriptor=args.descriptor,
+                          primes=args.primes)
         validate_hdf5(output_name, sys_elements=sys_elements)
 
     elif args.action == 'collate':

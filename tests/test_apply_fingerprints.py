@@ -61,7 +61,7 @@ class ApplyFingerprintsTestCase(unittest.TestCase):
     def test_structures_to_hdf5(self):
         apply_descriptors('structure.test.hdf5', 'fingerprint.test.hdf5',
                           self.sys_elements, self.parameters,
-                          descriptor=self.descriptor)
+                          descriptor=self.descriptor, primes=True)
         num_fingerprints = validate_hdf5('fingerprint.test.hdf5')[1]
         self.validation_test = (num_fingerprints == self.n)
         with h5py.File('fingerprint.test.hdf5', 'r', libver='latest') as h5f:
