@@ -1,53 +1,41 @@
-from builtins import range
-
-import numpy, time, scipy.sparse
-
-from molml.base import BaseFeature, SetMergeMixin
-from molml.utils import get_element_pairs, get_index_mapping
+import numpy, time
 
 
-class BehlerParrinello(SetMergeMixin, BaseFeature):
+class BehlerParrinello():
     
     """
-    An implementation of the descriptors used in Behler-Parrinello Neural
-    Networks.
+    An implementation of the Behler-Parrinello descriptors. 
 
     Parameters
     ----------
-    input_type : string, default='list'
-        Specifies the format the input values will be (must be one of 'list'
-        or 'filename').
-
-    n_jobs : int, default=1
-        Specifies the number of processes to create when generating the
-        features. Positive numbers specify a specifc amount, and numbers less
-        than 1 will use the number of cores the computer has.
-
     r_cut : float, default=6.
         The maximum distance allowed for atoms to be considered local to the
         "central atom".
 
-    r_s : float, default=1.0
+    r_s : float, default=0.0
         An offset parameter for computing gaussian values between pairwise
         distances.
 
     eta : float, default=1.0
         A decay parameter for the gaussian distances.
 
-    lambda_ : float, default=1.0
-        This value sets the orientation of the cosine function for the angles.
-        It should only take values in {-1., 1.}.
-
     zeta : float, default=1.0
         A decay parameter for the angular terms.
+        
+    lambda_ : float, default=1.0
+        This value sets the orientation of the cosine function for the angles.
+        It should only take values of 1 or -1.
 
     Attributes
     ----------
-    _elements : set
-        A set of all the elements in the molecules.
+    _elements : list
+        A list of all the elements in the molecules.
 
-    _element_pairs : set
-        A set of all the element pairs in the molecules.
+    _element_pairs : list
+        A list of all unique element pairs in the molecules.
+        
+    _N_unitcell : int
+        Number of atoms in the unitcell.
 
     References
     ----------
@@ -56,21 +44,18 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
     
     """
    
-    ATTRIBUTES = ("_elements", "_element_pairs")
-    LABELS = ("_elements", "_element_pairs")
+    ATTRIBUTES = ("_elements", "_element_pairs", "_N_unitcell")
+    LABELS = ("_elements", "_element_pairs", "_N_unitcell")
 
-    def __init__(self, input_type='list', n_jobs=1, r_cut=6.0, r_s=1., eta=1.,
-                 lambda_=1., zeta=1.):
-        super(BehlerParrinello, self).__init__(input_type=input_type,
-                                               n_jobs=n_jobs)
+    def __init__(self, r_cut=6.0, r_s=0., eta=1., lambda_=1., zeta=1.):
         self.r_cut = r_cut
         self.r_s = r_s
         self.eta = eta
-        self.lambda_ = lambda_
         self.zeta = zeta
+        self.lambda_ = lambda_
         self._elements = None
         self._element_pairs = None
-        self._unitcell = None
+        self._N_unitcell = None
 
 
     def fc(self, R):
@@ -90,17 +75,16 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
     
         Returns
         -------
-        array, shape=(N_atoms, N_atoms)
-        The new distance matrix with the cutoff function applied
+        fc : array, shape=(N_atoms, N_atoms)
+             The new distance matrix with the cutoff function applied
 
         """
         
-#        values = 1.0 + 0*R  ## for easy testing purposes only !! DO NOT USE in actual calculations !!
-        values = 0.5 * (numpy.cos(numpy.pi * R / self.r_cut) + 1)
-        values[R > self.r_cut] = 0
-        values[R < 1E-08] = 0  ## in order to exclude "onsite" terms from sum 
+        fc = 0.5 * (numpy.cos(numpy.pi * R / self.r_cut) + 1)
+        fc [R > self.r_cut] = 0
+        fc[R < 1E-08] = 0  ## in order to exclude self terms from sum 
         
-        return values
+        return fc
 
 
     def cosTheta(self, coords, R, periodic=False):
@@ -108,9 +92,7 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         """
         Compute the angular term for all triples of atoms:
 
-            cos(\Theta_{ijk}) = (R_{ij} . R_{ik}) / (|R_{ij}| |R_{ik}|)
-
-        This is only a slight modification from molml.utils.get_angles
+            cos(\theta_{ijk}) = (R_{ij} . R_{ik}) / (|R_{ij}| |R_{ik}|)
 
         Parameters
         ----------
@@ -122,9 +104,9 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Returns
         -------
-        array, shape=(N_centralatoms, N_atoms, N_atoms)
-        The cosines triplet angles.
-        cosTheta[i,j,k] is the angle of the triplet j-i-k (i is the central atom)
+        cosTheta : array, shape=(N_centralatoms, N_atoms, N_atoms)
+                   The cosines triplet angles.
+                   cosTheta[i,j,k] is the angle of the triplet j-i-k (i is the central atom)
             
         """
         
@@ -134,57 +116,56 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         with numpy.errstate(divide='ignore', invalid='ignore'):
             R_unitvecs = R_vecs / R[:N_unit,:,None]
         R_unitvecs = numpy.nan_to_num(R_unitvecs)
+        
         ## the Einstein summation in the following line essentially performs the dot product Rij.Rik
-        cosTheta = numpy.einsum('ijm,ikm->ijk', R_unitvecs, R_unitvecs)
+        cosTheta = numpy.einsum('ijm,ikm->ijk', R_unitvecs, R_unitvecs)                  
         
         return cosTheta
     
     
-    def G1(self, fc, R, elements, periodic=False):
+    def G1(self, R, fc, periodic=False):
         
         """
-        A radial symmetry function:
+        Radial symmetry function:
 
             G^1_i = \sum_{j \neq i} \exp(- \eta (R_{ij} - R_s)^2) f_c(R_{ij})
 
         Parameters
-        ----------
-        fc: array, shape=(N_atoms, N_atoms)
-            The new distance matrix with the cutoff function applied
+        ----------d
         R : array, shape=(N_atoms, N_atoms)
             A distance matrix for all the atoms (scipy.spatial.cdist)
-        elements: list of element name strings
+        fc: array, shape=(N_atoms, N_atoms)
+            The new distance matrix with the cutoff function applie
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
 
         Returns
         -------
-        array, shape=(# atoms, # unique elements)
-        The atom-wise G^1 evaluations.
+        G1 : array, shape=(N_centralatoms, N_elements)
+             The atom-wise G^1 evaluations.
             
         """
         
         N_unit = self._N_unitcell
         
-        elements = numpy.array(elements)
+        elements = numpy.array(self._elements)
         
         values = numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2) * fc[:N_unit,:]       
         
-        totals = []
+        G1 = []
         for ele in numpy.unique(sorted(elements)):
             ## find the positions of all atoms of type "ele"
             idxs = numpy.where(elements == ele)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
-            total = values[:, idxs].sum(axis=1)
-            totals.append(total)
+            G1.append(values[:, idxs].sum(axis=1))
         
-        return totals
+        return G1
 
 
-    def G2(self, fc, cosTheta, R, elements, periodic=False):
+    def G2(self, R, fc, cosTheta, periodic=False):
         
         """
-        An angular symmetry function:
+        Angular symmetry function:
 
             G^2_i = 2^{1-\zeta} \sum_{i,k \neq i}
                         (1 - \lambda \cos(\Theta_{ijk}))^\zeta
@@ -193,26 +174,28 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Parameters
         ----------
+        R: array, shape=(N_atoms, N_atoms)
+           A distance matrix for all the atoms (scipy.spatial.cdist).
         fc: array, shape=(N_atoms, N_atoms)
             The new distance matrix with the cutoff function applied
         cosTheta: array, shape=(N_atoms, N_atoms, N_atoms)
                   An array of cosines of triplet angles.
-        R: array, shape=(N_atoms, N_atoms)
-           A distance matrix for all the atoms (scipy.spatial.cdist).
-        elements: list of element name strings
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
 
         Returns
         -------
-        array, shape=(# atoms, # unique element pairs)
-        The atom-wise G^2 evaluations.
+        G2 : array, shape=(N_centralatoms, N_elementpairs)
+             The atom-wise G^2 evaluations.
+        values : array, shape=(N_centralatoms, N_atoms, N_atoms)
+                 The angular terms inside the sum.
+                 (To be reused when evaluating dG2/dRml)
             
         """
         
         N_unit = self._N_unitcell
         
-        elements = numpy.array(elements)
-        element_pairs = sorted(numpy.array(get_element_pairs(elements)),key=lambda x: (x[0],x[1]))
+        elements = numpy.array(self._elements)
+        element_pairs = sorted(numpy.array(self._element_pairs),key=lambda x: (x[0],x[1]))
         
         values = (2 ** (1 - self.zeta) * (1 + self.lambda_ * cosTheta) ** self.zeta 
                   * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
@@ -220,19 +203,19 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
                   * numpy.exp(-self.eta * R[None,:,:]**2)
                   * fc[:N_unit,:,None] * fc[:N_unit,None,:] * fc[None,:,:])
 
-        totals = []
+        G2 = []
         for [ele1,ele2] in element_pairs:
             ## find the positions of all pairs of atoms of type (ele1,ele2)
             idxj,idxk = numpy.where(elements==ele1)[0],numpy.where(elements==ele2)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
-            total = (values[:, [[i] for i in idxj], idxk]).sum(axis=2).sum(axis=1)
             if ele1 != ele2:
                 ## double the sum over pairs of (ele1,ele2) and (ele2,ele1)
-                total = 2 * total
-            totals.append(total)
+                G2.append(2*(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1)))
+            else:    
+                G2.append(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1))
             
-        return totals
+        return G2, values
     
 
     def dRij_dRml(self, coords, R, periodic=False):
@@ -252,8 +235,10 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
     
         Returns
         -------
-        array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
-        Access the derivatives by indexing dRij_dRml[i,j,m,l] which returns a scalar
+        dRij_dRml : array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+                    Derivative of the norm of the position vector R_{ij}.
+        Rij_dRij_dRml : array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+                        R_{ij} multiplied by its derivative.
         
         """
         
@@ -264,45 +249,37 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
         deltajm_deltaim = (numpy.eye(len(coords))[None,:,:N_unit]
                             - numpy.eye(len(coords))[:,None,:N_unit])
 
+        Rij_dRij_dRml = deltajm_deltaim[:,:,:,None] * (coords[None,:,None,:] - coords[:,None,None,:])
+
         with numpy.errstate(divide='ignore', invalid='ignore'):
-            R_inverse = 1./R
-        R_inverse = numpy.nan_to_num(R_inverse)
+            dRij_dRml = Rij_dRij_dRml / R[:,:,None,None]     
+        dRij_dRml = numpy.nan_to_num(dRij_dRml)
         
-        dRij_dRml = deltajm_deltaim[:,:,:,None] * (coords[None,:,None,:] - coords[:,None,None,:]) * R_inverse[:,:,None,None]
-        
-        return dRij_dRml
+        return dRij_dRml, Rij_dRij_dRml
 
 
-    def dRijvec_dRml(self, N_tot, periodic=False):
-        
+    def Rij_dRij_dRml_sum(self, Rij_dRij_dRml):
+
         """
-        Computes the derivative of the position vector R_{ij}
-        with respect to cartesian direction l of atom m.
-    
-        See Eq. 14d of the supplementary information of Khorshidi, Peterson, CPC(2016).
+        Sum of Rij.(dRij/dRml) terms:
     
         Parameters
         ----------
-        N_tot: total number of atoms
-        periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
-    
+        Rij_dRij_dRml : array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+                        R_{ij} multiplied by its derivative.
+                        
         Returns
         -------
-        array, shape=(N_centralatoms, N_atoms, N_centralatoms, 3, 3)
-        Access the derivatives by indexing dRijvec_dRml[i,j,m,l] which returns a vector
+        array, shape=(N_atoms, N_atoms, N_atoms, N_centralatoms, 3)
+        Sum of Rij.(dRij/dRml) terms.
         
         """
-
+        
         N_unit = self._N_unitcell
-
-        ## construct the identity matrices first with all atoms in the i and m dimensions
-        ## then pick out the relevant slices in the i and m dimensions which correspond to "central" atoms
-        deltajm_deltaim = (numpy.eye(N_tot)[:,:N_unit][None,:,:]
-                            - numpy.eye(N_tot)[:N_unit,:N_unit][:,None,:])
-        
-        dRijvec_dRml = deltajm_deltaim[:,:,:,None,None] * numpy.eye(3)[None,None,None,:,:]
-        
-        return dRijvec_dRml
+            
+        return (Rij_dRij_dRml[:N_unit,:,None,:,:] 
+                + Rij_dRij_dRml[:N_unit,None,:,:,:] 
+                + Rij_dRij_dRml[None,:,:,:,:])
 
 
     def dfc_dRml(self, R, dRij_dRml):
@@ -321,18 +298,50 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
     
         Returns
         -------
-        array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+        dfc : array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+              Derivative of the cutoff function. 
 
         """
         
-        values = 0.5 * (-numpy.pi / self.r_cut) * numpy.sin(numpy.pi * R / self.r_cut)[:,:,None,None] * dRij_dRml
-        values[R > self.r_cut] = 0
-        values[R < 1E-08] = 0  ## in order to exclude "onsite" terms from sum 
+        dfc = 0.5 * (-numpy.pi / self.r_cut) * numpy.sin(numpy.pi * R / self.r_cut)[:,:,None,None] * dRij_dRml
+        dfc[R > self.r_cut] = 0
+        dfc[R < 1E-08] = 0  ## in order to exclude self terms from sum 
         
-        return values
+        return dfc
     
     
-    def dcosTheta_dRml(self, coords, R, dRij_dRml, dRijvec_dRml, cosTheta, periodic=False):
+    def fcinv_dfc_dRml_sum(self, fc, dfc_dRml):
+
+        """
+        Sum of (1/fc).(dfc/dRml) terms:
+    
+            
+        Parameters
+        ----------
+        fc : array, shape=(N_atoms, N_atoms)
+             The new distance matrix with the cutoff function applied
+        dfc_dRml : array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+                   Derivative of the cutoff function. 
+    
+        Returns
+        -------
+        array, shape=(N_atoms, N_atoms, N_atoms, N_centralatoms, 3)
+        Sum of (1/fc).(dfc/dRml) terms.
+
+        """
+        
+        N_unit = self._N_unitcell
+        
+        with numpy.errstate(divide='ignore', invalid='ignore'):
+            fcinv_dfc_dRml = dfc_dRml / fc[:,:,None,None]
+        fcinv_dfc_dRml = numpy.nan_to_num(fcinv_dfc_dRml) 
+        
+        return (fcinv_dfc_dRml[:N_unit,:,None,:,:]
+                + fcinv_dfc_dRml[:N_unit,None,:,:,:]
+                + fcinv_dfc_dRml[None,:,:,:,:])
+
+
+    def dcosTheta_dRml(self, coords, R, dRij_dRml, cosTheta, periodic=False): 
         
         """
         See Eq. 14f of the supplementary information of Khorshidi, Peterson, CPC(2016).
@@ -345,40 +354,41 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
             A distance matrix for all the atoms (scipy.spatial.cdist).
         dRij_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
                    An array of the derivatives of the distance matrix
-        dRijvec_dRml: array, shape=(N_centralatoms, N_atoms, N_centralatoms, 3, 3)
-                      An array of the derivatives of the position vectors
         cosTheta: array, shape=(N_centralatoms, N_atoms, N_atoms)
                   An array of cosines of triplet angles.
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
 
         Returns
         -------
-        array, shape=(N_centralatoms, N_atoms, N_atoms, N_centralatoms, 3)
-        The derivatives of the cosines of triplet angles.
-        Access the derivatives by indexing dcosTheta_dRml[i,j,k,m,l] which returns a scalar
+        dcosTheta : array, shape=(N_centralatoms, N_atoms, N_atoms, N_centralatoms, 3)
+                         The derivatives of the cosines of triplet angles.
         
         """
         
+        N_tot = len(coords)
         N_unit = self._N_unitcell
         
         R_vecs = coords - coords[:N_unit,None]
 
-        dcosTheta_dRml = (numpy.einsum('ijmld,ikd->ijkml', dRijvec_dRml, R_vecs)
-                                + numpy.einsum('ikmld,ijd->ijkml', dRijvec_dRml, R_vecs))
+        ## construct the identity matrices first with all atoms in the i and m dimensions
+        ## then pick out the relevant slices in the i and m dimensions which correspond to "central" atoms
+        deltajm_deltaim = (numpy.eye(N_tot)[None,:,:N_unit]
+                            - numpy.eye(N_tot)[:N_unit,None,:N_unit])
+        
+        dcosTheta = (deltajm_deltaim[:,:,None,:,None] * R_vecs[:,None,:,None,:]
+                            + deltajm_deltaim[:,None,:,:,None] * R_vecs[:,:,None,None,:])
 
-        ## the Einstein summation performs the dot products
         with numpy.errstate(divide='ignore', invalid='ignore'):
-            dcosTheta_dRml = (dcosTheta_dRml
-                                / (R[:N_unit,:,None,None,None]*R[:N_unit,None,:,None,None])
-                                - (dRij_dRml[:N_unit,:,None,:,:] / R[:N_unit,:,None,None,None]
-                                + dRij_dRml[:N_unit,None,:,:,:] / R[:N_unit,None,:,None,None])
-                                * cosTheta[:,:,:,None,None])
-        dcosTheta_dRml = numpy.nan_to_num(dcosTheta_dRml)
+            dcosTheta = (dcosTheta / (R[:N_unit,:,None,None,None]*R[:N_unit,None,:,None,None])
+                         - (dRij_dRml[:N_unit,:,None,:,:] / R[:N_unit,:,None,None,None]
+                             + dRij_dRml[:N_unit,None,:,:,:] / R[:N_unit,None,:,None,None])
+                         * cosTheta[:,:,:,None,None])
+        dcosTheta = numpy.nan_to_num(dcosTheta)
 
-        return dcosTheta_dRml
+        return dcosTheta
+    
 
-
-    def dG1_dRml(self, fc, dfc_dRml, R, dRij_dRml, elements, periodic=False):
+    def dG1_dRml(self, R, dRij_dRml, fc, dfc_dRml, periodic=False):
         
         """
         Derivative of G1 symmetry function.
@@ -386,45 +396,43 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Parameters
         ----------
-        fc: array, shape=(N_atoms, N_atoms)
-            The new distance matrix with the cutoff function applied
-        dfc_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
-                  An array of the derivatives of fc.
         R : array, shape=(N_atoms, N_atoms)
             A distance matrix for all the atoms (scipy.spatial.cdist).
         dRij_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
                    An array of the derivatives of the distance matrix
-        elements: list of element name strings
+        fc: array, shape=(N_atoms, N_atoms)
+            The new distance matrix with the cutoff function applied
+        dfc_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
+                  An array of the derivatives of fc.
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
 
         Returns
         -------
-        array, shape=(N_atoms, N_elements)
-        The atom-wise G^1 evaluations.
+        dG1 : array, shape=(N_centralatoms, N_centralatoms, 3, N_elements)
+              The atom-wise dG^1 evaluations.
             
         """
         
         N_unit = self._N_unitcell
         
-        elements = numpy.array(elements)
+        elements = numpy.array(self._elements)
         
         values = ((dRij_dRml[:N_unit,:,:,:] * (-2*self.eta * (R[:N_unit,:] - self.r_s) * fc[:N_unit,:])[:,:,None,None]
                     + dfc_dRml[:N_unit,:,:,:])
                     * numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2)[:,:,None,None])   
         
-        totals = []
+        dG1 = []
         for ele in numpy.unique(sorted(elements)):
             ## find the positions of all atoms of type "ele"
             idxs = numpy.where(elements == ele)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
-            total = values[:,idxs,:,:].sum(axis=1)
-            totals.append(total)
+            dG1.append(values[:,idxs,:,:].sum(axis=1))
         
-        return totals
+        return dG1
 
 
-    def dG2_dRml(self, fc, dfc_dRml, cosTheta, dcosTheta_dRml, R, dRij_dRml, elements, periodic=False):
+    def dG2_dRml(self, Rij_dRij_dRml_sum, fcinv_dfc_dRml_sum, cosTheta, dcosTheta_dRml, G2vals, periodic=False):
         
         """
         Derivative of G2 symmetry function.
@@ -432,60 +440,45 @@ class BehlerParrinello(SetMergeMixin, BaseFeature):
 
         Parameters
         ----------
-        fc: array, shape=(N_atoms, N_atoms)
-            The new distance matrix with the cutoff function applied
-        dfc_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
-                  An array of the derivatives of fc.
+        Rij_dRij_dRml_sum: 
+        fcinv_dfc_dRml_sum:
         cosTheta: array, shape=(N_centralatoms, N_atoms, N_atoms)
                   An array of cosines of triplet angles.
         dcosTheta_dRml: array, shape=(N_centralatoms, N_atoms, N_atoms, N_centralatoms, 3)
                         The derivatives of the cosines of triplet angles.
-        R : array, shape=(N_atoms, N_atoms)
-            A distance matrix for all the atoms (scipy.spatial.cdist).
-        dRij_dRml: array, shape=(N_atoms, N_atoms, N_centralatoms, 3)
-                   An array of the derivatives of the distance matrix
-        elements: list of element name strings
+        G2vals: array, shape=(N_centralatoms, N_atoms, N_atoms)
+                The angular terms inside the sum.
         periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
 
         Returns
         -------
-        array, shape=(# atoms, # unique element pairs)
-        The atom-wise G^2 evaluations.
+        dG2: array, shape=(N_centralatoms, N_centralatoms, 3, N_elementpairs)
+             The atom-wise dG^2 evaluations.
             
         """
         
-        N_unit = self._N_unitcell
-        
-        elements = numpy.array(elements)
-        element_pairs = sorted(numpy.array(get_element_pairs(elements)),key=lambda x: (x[0],x[1])) 
-        
-        values = (2 ** (1 - self.zeta) * ((1 + self.lambda_ * cosTheta) ** (self.zeta - 1)
-                  * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
-                  * numpy.exp(-self.eta * R[:N_unit,None,:]**2) 
-                  * numpy.exp(-self.eta * R[None,:,:]**2))[:,:,:,None,None]
-                  * (fc[:N_unit,:,None,None,None] * fc[:N_unit,None,:,None,None] * fc[None,:,:,None,None]
-                     * (self.lambda_ * self.zeta * dcosTheta_dRml 
-                        - 2*self.eta * (1 + self.lambda_ * cosTheta[:,:,:,None,None])
-                         * (R[:N_unit,:,None,None,None] * dRij_dRml[:N_unit,:,None,:,:]
-                          + R[:N_unit,None,:,None,None] * dRij_dRml[:N_unit,None,:,:,:]
-                          + R[None,:,:,None,None] * dRij_dRml[None,:,:,:,:]))
-                  + (1 + self.lambda_ * cosTheta[:,:,:,None,None])
-                     * (dfc_dRml[:N_unit,:,None,:,:] * fc[:N_unit,None,:,None,None] * fc[None,:,:,None,None] 
-                      + dfc_dRml[:N_unit,None,:,:,:] * fc[:N_unit,:,None,None,None] * fc[None,:,:,None,None]
-                      + dfc_dRml[None,:,:,:,:] * fc[:N_unit,:,None,None,None] * fc[:N_unit,None,:,None,None])))
-                           
-        totals = []
+        elements = numpy.array(self._elements)
+        element_pairs = sorted(numpy.array(self._element_pairs),key=lambda x: (x[0],x[1]))
+      
+        with numpy.errstate(divide='ignore', invalid='ignore'):
+            values = 1. / (1 + self.lambda_ * cosTheta)    
+        values = numpy.nan_to_num(values)[:,:,:,None,None] * dcosTheta_dRml
+
+        values = G2vals[:,:,:,None,None] * (self.lambda_ * self.zeta * values - 2*self.eta * Rij_dRij_dRml_sum + fcinv_dfc_dRml_sum)
+                   
+        dG2 = []
         for [ele1,ele2] in element_pairs:
             ## find the positions of all pairs of atoms of type (ele1,ele2)
             idxj,idxk = numpy.where(elements==ele1)[0],numpy.where(elements==ele2)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
-            total = (values[:, [[i] for i in idxj], idxk]).sum(axis=2).sum(axis=1)
+            
             if ele1 != ele2:
                 ## double the sum over pairs of (ele1,ele2) and (ele2,ele1)
-                total = 2 * total
-            totals.append(total)
-            
-        return totals
+                dG2.append(2*(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1)))
+            else:    
+                dG2.append(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1))
+
+        return dG2
     
     
