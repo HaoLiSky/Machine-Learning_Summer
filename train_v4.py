@@ -12,7 +12,7 @@ import keras.backend as K
 from time import time
 from keras.models import Model
 from keras.layers import Input, Dense, Add
-from keras.optimizers import SGD
+from keras.optimizers import SGD, Adam
 from keras.callbacks import ModelCheckpoint, EarlyStopping, Callback
 # from keras.callbacks import TerminateOnNaN
 from sklearn.preprocessing import normalize
@@ -34,12 +34,13 @@ set_trip_params = [32]  # range: [1, 32]
 
 set_tt_split = [0.8]  # fraction
 set_hlayers = [2]  # number of hidden layers
-set_dense_units = [120]  # number of neurons per hidden layer
+set_dense_units = [40]  # number of neurons per hidden layer
 set_activation = [None, 'linear', 'sigmoid', 'softplus']
 
 epochs = 5000
-batch_size = 128
-optimizer = SGD(lr=0.00001, decay=1e-6, momentum=0.9, nesterov=True)
+batch_size = 256
+#optimizer = Adam()
+optimizer = SGD(lr=0.0000001, decay=1e-6, momentum=0.9, nesterov=True)
 
 #   ___  __    ___    ___         __         ^
 #  |__  |  \ |  |      |  |__| | /__`        |
@@ -356,10 +357,11 @@ def grid_search_train(filename, index, loss, optimizer, tt_splits=[0.5],
         loss_hist = train(preprocessed_data,
                           n_hlayers, dense_units, activation,
                           epochs, batch_size, loss, optimizer, tag)
+        loss_hist_rescaled = loss_hist[::int(np.ceil(len(loss_hist)/1024))]
         #print('\n{0:.4f}'.format(min_loss))
         lines.append(tag.replace('-', ',')+';\n')
         line = ','.join(['{}'.format(loss_val) for
-                         loss_val in loss_hist])+';\n'
+                         loss_val in loss_hist_rescaled])+';\n'
         lines.append(line)
     print_progress('writing loss histories')
     with open(filename.replace('.hdf5', '.csv'), 'w') as log:
@@ -455,6 +457,7 @@ def train(data, n_hlayers, dense_units, activation,
     except (KeyboardInterrupt, SystemExit):
         print('\n')
         pass
+
     return history.losses
 
     # model.save_weights('my_model_weights.h5')
@@ -462,7 +465,8 @@ def train(data, n_hlayers, dense_units, activation,
 
 
 if __name__ == '__main__':
-    filename = [fil for fil in os.listdir('.') if 'fingerprints' in fil][0]
+    filename = [fil for fil in os.listdir('.')
+                if 'fingerprints' in fil and '.hdf5' in fil][0]
     grid_search_train(filename, reading_index, rmse_loss, optimizer,
                       tt_splits=set_tt_split, H=set_hlayers,
                       D=set_dense_units, a=set_pair_params,
