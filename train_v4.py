@@ -3,16 +3,49 @@
 Usage: >>>python train_v3.py gold_simple_fps.hdf5
 
 """
-import sys
+import os
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import h5py
 import numpy as np
-import keras.backend as tf
+import keras.backend as K
+from time import time
 from keras.models import Model
-from keras.layers import Input, Dense, Add, Masking
+from keras.layers import Input, Dense, Add
 from keras.optimizers import SGD
-from keras.callbacks import ModelCheckpoint
+from keras.callbacks import ModelCheckpoint, EarlyStopping, Callback
+# from keras.callbacks import TerminateOnNaN
 from sklearn.preprocessing import normalize
-from itertools import combinations_with_replacement
+from itertools import combinations_with_replacement, product
+
+#################################################
+#   ___  __    ___    ___         __
+#  |__  |  \ |  |      |  |__| | /__`        |
+#  |___ |__/ |  |      |  |  | | .__/        |
+#                                            v
+
+reading_index = slice(None, None, None)
+# starting index, ending index, step for reading data from .hdf5
+# e.g. (1, 100, 2) for the first 50 odd indices
+# e.g. (None, None, None) to use entire dataset
+
+set_pair_params = [8]  # range: [1, 8]
+set_trip_params = [32]  # range: [1, 32]
+
+set_tt_split = [0.8]  # fraction
+set_hlayers = [2]  # number of hidden layers
+set_dense_units = [120]  # number of neurons per hidden layer
+set_activation = [None, 'linear', 'sigmoid', 'softplus']
+
+epochs = 5000
+batch_size = 128
+optimizer = SGD(lr=0.00001, decay=1e-6, momentum=0.9, nesterov=True)
+
+#   ___  __    ___    ___         __         ^
+#  |__  |  \ |  |      |  |__| | /__`        |
+#  |___ |__/ |  |      |  |  | | .__/        |
+#
+#################################################
 
 pair_slice_choices = [[2],
                       [2, 6],
@@ -27,45 +60,46 @@ triplet_slice_choices = [[8],
                           27, 30, 31],
                          slice(None, None, None)]
 
-#################################################
-#   ___  __    ___    ___         __
-#  |__  |  \ |  |      |  |__| | /__`        |
-#  |___ |__/ |  |      |  |  | | .__/        |
-#                                            v
-
-n_pair_params = 8  # range: [1, 8]
-n_trip_params = 32  # range: [1, 32]
-
-index = slice(None, None, None)
-# starting index, ending index, step for reading data from .hdf5
-# e.g. (1, 100, 2) for the first 50 odd indices
-# e.g. (None, None, None) to use entire dataset
-
-train_test_split = 0.5  # fraction
-
-n_hlayers = 3  # number of hidden layers
-dense_units = 10  # number of neurons per hidden layer
-activation = 'softplus'
-masking = False
-
-epochs = 5000
-batch_size = 128
-optimizer = SGD(lr=0.00001, decay=1e-6, momentum=0.9, nesterov=True)
-loss = 'mean_squared_error'
+global stage, stage_time
+stage = 0
+stage_time = time()
 
 
-#   ___  __    ___    ___         __         ^
-#  |__  |  \ |  |      |  |__| | /__`        |
-#  |___ |__/ |  |      |  |  | | .__/        |
-#
-#################################################
+def print_progress(line):
+    global stage, stage_time
+    if stage > 0:
+        print('{0:.1f} seconds elapsed.'.format(time() - stage_time))
+    print('\n{}) {}'.format(stage, line))
+    stage += 1
+    stage_time = time()
 
 
 def mean_pred(y_true, y_pred):
-    return tf.mean(y_pred)
+    return K.mean(y_pred)
 
-def mean_true(y_true, y_pred):
-    return tf.mean(y_true)
+
+def rmse_loss(y_true, y_pred):
+    return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
+
+
+class LossHistory(Callback):
+    def __init__(self, display=10):
+        self.seen = 0
+        self.display = display
+
+    def on_train_begin(self, logs={}):
+        self.losses = []
+
+    def on_batch_end(self, batch, logs={}):
+        self.losses.append(logs.get('loss'))
+
+    def on_epoch_end(self, epoch, logs={}):
+        self.seen += 1
+        if self.seen % self.display == 0:
+            print('\rEpoch {0} Loss: {1:.1f} meV'.ljust(70)
+                  .format(self.seen, logs.get('loss') * 1000),
+                  end='')
+
 
 def normalize_inputs(unprocessed_data, Alpha, Beta):
     """
@@ -98,7 +132,7 @@ def normalize_inputs(unprocessed_data, Alpha, Beta):
               '  max=', np.amax(normalized_grid))
 
         regenerated_fps = regenerate_fp_by_len(normalized_grid, fp_lengths)
-        print(set([len(x) for x in regenerated_fps]))
+        # print(set([len(x) for x in regenerated_fps]))
 
         vectorized_fp_list.append(vectorize_fps(regenerated_fps, alpha))
     vectorized_fps = [np.concatenate((g1t, g2t), axis=1) for g1t, g2t
@@ -165,10 +199,10 @@ def pad_fp_by_element(input_data, compositions, final_layers):
         secondary_dims = len(data_shape) - 1
         pad_widths = [(natoms_diff, 0)] + [(0, 0)] * secondary_dims
         # tuple of (header_pad, footer_pad) per dimension
-        if masking:
-            data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * -1
-        else:
-            data_f = np.pad(np.zeros(data.shape), pad_widths, 'edge')
+        # if masking:
+        #     data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * -1
+        # else:
+        data_f = np.pad(np.zeros(data.shape), pad_widths, 'edge')
         slice_pos = np.cumsum(initial_layers)[:-1]
         # row indices to slice to create n sections
         data_sliced = np.split(data, slice_pos)
@@ -183,12 +217,14 @@ def pad_fp_by_element(input_data, compositions, final_layers):
     return np.asarray(new_input_data)
 
 
-def element_model(input_vector_length, n_hlayers, name, activation='softplus'):
+def element_model(input_vector_length, n_hlayers, dense_units,
+                  name, activation='softplus'):
     """
 
     Args:
         input_vector_length: Length of feature vector.
         n_hlayers: Number of hidden layers.
+        dense_units: Number of neurons per hidden layer.
         name: Element label.
         activation: Activation function.
 
@@ -202,12 +238,9 @@ def element_model(input_vector_length, n_hlayers, name, activation='softplus'):
                         name=name + '_' + str(
                             layers_id))  # first layer (input)
     layers_id = layers_id + 1
-    mask = Masking(mask_value=-1.)(input_layer)  # second layer (masking)
-    if masking:
-        h_layer = Dense(dense_units, activation=activation)(mask)
-    else:
-        h_layer = Dense(dense_units, activation=activation)(input_layer)
-    for i in range(n_hlayers - 1):
+
+    h_layer = input_layer
+    for i in range(n_hlayers):
         # stack hidden layers
         h_layer = Dense(dense_units, activation=activation)(h_layer)
     output_layer = Dense(1)(h_layer)
@@ -216,7 +249,8 @@ def element_model(input_vector_length, n_hlayers, name, activation='softplus'):
     return model
 
 
-def structure_model(count_per_element, sys_elements, element_models):
+def structure_model(input_vector_length, count_per_element, sys_elements,
+                    element_models):
     """
 
     Args:
@@ -225,6 +259,7 @@ def structure_model(count_per_element, sys_elements, element_models):
         sys_elements: List of element symbols as strings.
         element_models: List of element models
             i.e. output of element_model().
+        input_vector_length (int): Length of flattened input vector.
 
     Returns:
         Keras model to compile and train with padded data.
@@ -257,19 +292,15 @@ def structure_model(count_per_element, sys_elements, element_models):
     return model
 
 
-if __name__ == "__main__":
-
-    filename = sys.argv[1]
-    pair_slice = pair_slice_choices[int(np.log2(n_pair_params))]
-    triplet_slice = triplet_slice_choices[int(np.log2(n_trip_params))]
-
+def read_fingerprints(filename, index):
     with h5py.File(filename, 'r',
                    libver='latest') as h5f:
         s_names = [line.split(b';')[0].decode('utf-8')
                    for line in h5f['system']['sys_entries'][()]][index]
         # read list of names from system/sys_entries dataset
         # slice by index
-        g_by_structure = []
+        g_1 = []
+        g_2 = []
         energy_list = []
         sys_elements = [symbol.decode('utf-8')
                         for symbol in h5f['system'].attrs['sys_elements']]
@@ -279,7 +310,7 @@ if __name__ == "__main__":
         for j, s_name in enumerate(s_names):
             # loop over structures
             dset = s_dset[s_name]  # group reference for one structure
-            number_of_atoms = dset.attrs['natoms']
+            # number_of_atoms = dset.attrs['natoms']
             element_set = [symbol.decode('utf-8')
                            for symbol in dset.attrs['element_set']]
             # set of elements per structure
@@ -288,38 +319,82 @@ if __name__ == "__main__":
 
             count_per_element = dset.attrs['element_counts']
             energy_value = dset.attrs['energy']
-            g_1 = dset['G_1'][()][..., pair_slice]
-            g_2 = dset['G_2'][()][..., triplet_slice]  # read and slice
-            g_by_structure.append([g_1, g_2])
+            g_1.append(dset['G_1'][()])
+            g_2.append(dset['G_2'][()])
             energy_list.append(float(energy_value))
             element_counts_list.append(count_per_element.tolist())
-            print(j, end='\r')
+            # print('read', j, end='\r')
+    return g_1, g_2, energy_list, element_counts_list, sys_elements
+
+
+def grid_search_train(filename, index, loss, optimizer, tt_splits=[0.5],
+                      H=[1], D=[4], activations=['softplus'],
+                      a=[2], b=[4], epochs=5000, batch_size=128):
+    print_progress('reading data')
+    read_data = read_fingerprints(filename, index)
+    n_samples = len(read_data[0])
+
+    lines = ['split,H,D,Activation,a,b;\n']
+    for (tt_split, n_hlayers, dense_units,
+         activation, n_pair_params,
+         n_triplet_params) in list(product(tt_splits, H, D,
+                                           activations,
+                                           a, b)):
+        global stage
+        stage = 1
+        split_index = int(np.round(tt_split * n_samples))
+
+        tag = '{},{}-{},{}-{},{}'.format(activation, n_hlayers, dense_units,
+                                         n_pair_params, n_triplet_params,
+                                         tt_split)
+
+        print_progress('preprocessing fingerprints'+tag)
+        preprocessed_data = preprocess(read_data,
+                                       n_pair_params, n_triplet_params,
+                                       split_index)
+        print_progress('training model: '+tag)
+        loss_hist = train(preprocessed_data,
+                          n_hlayers, dense_units, activation,
+                          epochs, batch_size, loss, optimizer, tag)
+        #print('\n{0:.4f}'.format(min_loss))
+        lines.append(tag.replace('-', ',')+';\n')
+        line = ','.join(['{}'.format(loss_val) for
+                         loss_val in loss_hist])+';\n'
+        lines.append(line)
+    print_progress('writing loss histories')
+    with open(filename.replace('.hdf5', '.csv'), 'w') as log:
+        log.writelines(lines)
+
+
+def preprocess(read_data,
+               n_pair_params, n_trip_params, split_index):
+    g_1, g_2, energy_list, element_counts_list, sys_elements = read_data
+
+    pair_slice = pair_slice_choices[int(np.log2(n_pair_params))]
+    triplet_slice = triplet_slice_choices[int(np.log2(n_trip_params))]
+
+    g_1 = [g[..., pair_slice] for g in g_1]
+    g_2 = [g[..., triplet_slice] for g in g_2]
+    fp_read = [g_1, g_2]  # rearrange by fingerprint
 
     max_per_element = np.amax(element_counts_list,
-                              axis=0)  # maximum occurances per atom type
-
-    max_atoms_tot = np.sum(max_per_element)
-
-    print('max occurences per element: ', max_per_element)
-    fp_read = list(zip(*g_by_structure))  # rearrange by fingerprint
-
-    b = [n_pair_params, n_trip_params]
+                              axis=0)  # maximum occurrences per atom type
 
     pair_interactions = list(combinations_with_replacement(sys_elements, 1))
     triplet_interactions = list(combinations_with_replacement(sys_elements, 2))
-
-    a = [len(pair_interactions), len(triplet_interactions)]
+    a = [len(pair_interactions), len(triplet_interactions)]  # per fingerprint
+    b = [n_pair_params, n_trip_params]  # per fingerprint
     normalized = normalize_inputs(fp_read, a, b)
-    print(set([x.shape for x in normalized]))
+
+    # print('prepadded shapes:', set([x.shape for x in normalized]))
 
     padded = pad_fp_by_element(normalized,
                                element_counts_list,
                                max_per_element)
-
+    np.random.shuffle(padded)
     padded = padded.transpose([1, 0, 2])
-    print(5, padded.shape)
+    # print('Padded data shape:', padded.shape)
     # now (atom index, structure index, parameter set)
-    split_index = int(np.round(train_test_split * padded.shape[1]))
 
     assert not np.any(np.isnan(padded))
     assert not np.any(np.isinf(padded))
@@ -330,46 +405,66 @@ if __name__ == "__main__":
     outputs_master = energy_list
     train_outputs = np.asarray(outputs_master[:split_index])
     valid_outputs = np.asarray(outputs_master[split_index:])
+    return (train_inputs, valid_inputs,
+            train_outputs, valid_outputs,
+            sys_elements, max_per_element)
+
+
+def train(data, n_hlayers, dense_units, activation,
+          epochs, batch_size, loss, optimizer, filename):
+    (train_inputs, valid_inputs,
+     train_outputs, valid_outputs,
+     sys_elements, max_per_element) = data
 
     global layers_id
     layers_id = 0
     input_vector_length = train_inputs.shape[-1]
-    print(input_vector_length)
 
-    element_models = [element_model(input_vector_length, n_hlayers, specie,
+    element_models = [element_model(input_vector_length, n_hlayers,
+                                    dense_units, specie,
                                     activation=activation)
                       for specie in sys_elements]
 
-    model = structure_model(max_per_element, sys_elements, element_models)
-    model.summary()
-    model.compile(loss=loss, optimizer=optimizer, metrics=[mean_pred,
-                                                           mean_true])
+    model = structure_model(input_vector_length, max_per_element,
+                            sys_elements, element_models)
+    model.compile(loss=loss, optimizer=optimizer, metrics=[mean_pred])
 
     a = model.predict([atom for atom in train_inputs])
     assert not np.any(np.isnan(a))
     assert not np.any(np.isinf(a))
-    print(a)
-
-    #mask_test = [atom for atom in (np.ones((55, 5, 6)) * -1)]
-    #print('structure mask test: ', model.predict(mask_test))
-
-    #mask_test2 = (np.ones((5, 6)) * -1)
-    #print('element mask test: ', element_models[0].predict(mask_test2))
 
     train_inputs = [atom for atom in train_inputs]
     valid_inputs = [atom for atom in valid_inputs]
 
-    checkpointer = ModelCheckpoint(filepath='model_checkpoint.hdf5',
+    checkpointer = ModelCheckpoint(filepath=filename,
                                    verbose=0,
                                    monitor='val_loss',
                                    save_weights_only=False,
-                                   period=10,
-                                   save_best_only=True)
+                                   period=100)
 
-    model.fit(train_inputs, train_outputs,
-              epochs=epochs,
-              validation_data=(valid_inputs, valid_outputs),
-              batch_size=batch_size, callbacks=[checkpointer])
+    es = EarlyStopping(min_delta=0.0001, patience=100)
 
-    model.save_weights('my_model_weights.h5')
-    print(model.get_weights())
+    history = LossHistory()
+    # nan_check = TerminateOnNaN()
+    try:
+        model.fit(train_inputs, train_outputs,
+                  epochs=epochs, verbose=0,
+                  validation_data=(valid_inputs, valid_outputs),
+                  batch_size=batch_size, callbacks=[checkpointer,  # nan_check,
+                                                    es, history, ])
+    except (KeyboardInterrupt, SystemExit):
+        print('\n')
+        pass
+    return history.losses
+
+    # model.save_weights('my_model_weights.h5')
+    # print(model.get_weights())
+
+
+if __name__ == '__main__':
+    filename = [fil for fil in os.listdir('.') if 'fingerprints' in fil][0]
+    grid_search_train(filename, reading_index, rmse_loss, optimizer,
+                      tt_splits=set_tt_split, H=set_hlayers,
+                      D=set_dense_units, a=set_pair_params,
+                      b=set_trip_params, activations=set_activation,
+                      epochs=epochs, batch_size=batch_size)
