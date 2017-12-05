@@ -3,6 +3,8 @@
 Usage: >>>python train_v3.py gold_simple_fps.hdf5
 
 """
+# If it displays "nan" loss (which is a common problem in Tensorflow), solve it by changing the float value in ~/.keras/keras.json from "float32" to "float64" #
+
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
