@@ -1,5 +1,6 @@
 import numpy, time
-
+from scipy import sparse
+#from numba import jit
 
 class BehlerParrinello():
     
@@ -24,7 +25,7 @@ class BehlerParrinello():
         
     lambda_ : float, default=1.0
         This value sets the orientation of the cosine function for the angles.
-        It should only take values of 1 or -1.
+        It should only take values of +1 or -1.
 
     Attributes
     ----------
@@ -114,7 +115,7 @@ class BehlerParrinello():
         
         R_vecs = coords - coords[:N_unit,None]
         with numpy.errstate(divide='ignore', invalid='ignore'):
-            R_unitvecs = R_vecs / R[:N_unit,:,None]
+            R_unitvecs = numpy.divide(R_vecs,R[:N_unit,:,None])
         R_unitvecs = numpy.nan_to_num(R_unitvecs)
         
         ## the Einstein summation in the following line essentially performs the dot product Rij.Rik
@@ -167,8 +168,8 @@ class BehlerParrinello():
         """
         Angular symmetry function:
 
-            G^2_i = 2^{1-\zeta} \sum_{i,k \neq i}
-                        (1 - \lambda \cos(\Theta_{ijk}))^\zeta
+            G^2_i = 2^{1-\zeta} \sum_{j,k \neq i}
+                        (1 + \lambda \cos(\theta_{ijk}))^\zeta
                         \exp(-\eta (R_{ij}^2 + R_{ik}^2 + R_{jk}^2))
                         f_c(R_{ij}) f_c(R_{ik}) f_c(R_{jk})
 
@@ -196,7 +197,7 @@ class BehlerParrinello():
         
         elements = numpy.array(self._elements)
         element_pairs = sorted(numpy.array(self._element_pairs),key=lambda x: (x[0],x[1]))
-        
+       
         values = (2 ** (1 - self.zeta) * (1 + self.lambda_ * cosTheta) ** self.zeta 
                   * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
                   * numpy.exp(-self.eta * R[:N_unit,None,:]**2) 
@@ -372,11 +373,11 @@ class BehlerParrinello():
 
         ## construct the identity matrices first with all atoms in the i and m dimensions
         ## then pick out the relevant slices in the i and m dimensions which correspond to "central" atoms
-        deltajm_deltaim = (numpy.eye(N_tot)[None,:,:N_unit]
-                            - numpy.eye(N_tot)[:N_unit,None,:N_unit])
-        
-        dcosTheta = (deltajm_deltaim[:,:,None,:,None] * R_vecs[:,None,:,None,:]
-                            + deltajm_deltaim[:,None,:,:,None] * R_vecs[:,:,None,None,:])
+        deltajm_deltaim = numpy.subtract(numpy.eye(N_tot)[None,:,:N_unit],
+                                         numpy.eye(N_tot)[:N_unit,None,:N_unit])
+
+        dcosTheta = numpy.add(deltajm_deltaim[:,:,None,:,None] * R_vecs[:,None,:,None,:],
+                              deltajm_deltaim[:,None,:,:,None] * R_vecs[:,:,None,None,:])
 
         with numpy.errstate(divide='ignore', invalid='ignore'):
             dcosTheta = (dcosTheta / (R[:N_unit,:,None,None,None]*R[:N_unit,None,:,None,None])

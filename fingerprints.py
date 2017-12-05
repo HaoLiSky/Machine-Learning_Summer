@@ -89,18 +89,32 @@ def build_supercell(unitcell, R_c):
     supercell = make_supercell(unitcell,
                                [[2 * n1 + 1, 0, 0],
                                 [0, 2 * n2 + 1, 0],
-                                [0, 0, 2 * n2 + 1]])
-    supercell.wrap(
-        center=(0.5 / (2 * n1 + 1), 0.5 / (2 * n2 + 1), 0.5 / (2 * n3 + 1)))
-
-    assert np.all(np.isclose(supercell.get_positions()[:len(unitcell), ...],
+                                [0, 0, 2 * n3 + 1]])
+    
+    ## it appears that the ASE make_supercell function keeps the original unitcell atoms as the first entries in the supercell
+    ## raise a fatal error if it's not the case!
+    assert np.all(np.isclose(supercell.get_positions()[:len(unitcell)],
                              unitcell.get_positions()))
-
-    return supercell, len(unitcell.positions)
+    
+    ## wrap supercell so that original unitcell is in the center
+    supercell.wrap(center=(0.5 / (2 * n1 + 1),
+                           0.5 / (2 * n2 + 1),
+                           0.5 / (2 * n3 + 1)))
+    
+    ## trim away atoms which are not within the cutoff of any atom in the unitcell
+    coords, elements = [], []
+    coords1, elements1 = supercell.positions ,supercell.get_chemical_symbols()
+    R = cdist(np.asarray(coords1), np.asarray(coords1))
+    for j in range(len(coords1)):
+        if np.any(np.less_equal(R[:len(unitcell.positions),j],R_c)):
+            coords.append(coords1[j])
+            elements.append(elements1[j])
+                
+    return coords, elements, len(unitcell.positions)
 
 
 def represent_BP(coords, elements, parameters=None, periodic=False,
-                 N_unitcell=None, primes=False):
+                 N_unitcell=None, derivs=False):
     """
     computes the Behler-Parrinello atom-based descriptors for each atom in a given structure
 
@@ -117,12 +131,18 @@ def represent_BP(coords, elements, parameters=None, periodic=False,
     periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
     N_unitcell: number of atoms in the unitcell
                 (only applicable for periodic structures)
-    primes: calculate derivatives of fingerprints.
+    derivs: calculate derivatives of fingerprints.
 
     Returns
     -------
-    A (# atoms, # unique element types, # descriptors) array of G^1s and
-    a (# atoms, # unique element type pairs, # descriptors) array of G^2s.
+    fingerprints:
+        (# atoms, # unique element types, # descriptors) array of G^1s and 
+        (# atoms, # unique element type pairs, # descriptors) array of G^2s.
+        If derivs=True, also returns
+        (# atoms, # atoms, # cart directions(3), # unique element types, # descriptors) array of dG^1/dRs and 
+        (# atoms, # atoms, # cart directions(3), # unique element type pairs, # descriptors) array of dG^2/dRs.
+    interaction_dims: Dimensionality of interaction(s).
+        (e.g. 1 for pairwise, 2 for triplets, [1,2] for both)
 
     Notes
     -----
@@ -135,60 +155,59 @@ def represent_BP(coords, elements, parameters=None, periodic=False,
     para_pairs, para_triplets = parameters
 
     bp = BehlerParrinello()
-
-    if N_unitcell:
-        bp._N_unitcell = N_unitcell
-    else:
+    bp._elements = elements
+    bp._element_pairs = list(set(combinations_with_replacement(np.unique(elements),2)))
+    if N_unitcell == None:
         bp._N_unitcell = len(coords)
+    else:
+        bp._N_unitcell = N_unitcell
 
-    ## we only compute the distances and angles once for every structure
-    distmatrix = cdist(coords, coords)
-    fc = bp.fc(distmatrix)
-    cosTheta = bp.cosTheta(coords, distmatrix, periodic=periodic)
 
-    ## loops over different sets of parameters, overwriting the values that were used to initialize the class
-    G1 = []
+    ## quantities which are only computed once for every structure
+    ## if r_c is fixed, then we can compute the cutoff functions here as well...
+    R = cdist(coords, coords)
+    fc = bp.fc(R)
+    cosTheta = bp.cosTheta(coords, R, periodic = periodic)
+    G1s,G2s = [],[]
+    
+    if derivs:
+        dRij_dRml, Rij_dRij_dRml = bp.dRij_dRml(coords, R, periodic = periodic)
+        Rij_dRij_dRml_sum = bp.Rij_dRij_dRml_sum(Rij_dRij_dRml)
+        dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
+        fcinv_dfc_dRml_sum = bp.fcinv_dfc_dRml_sum(fc, dfc_dRml)
+        dcosTheta_dRml = bp.dcosTheta_dRml(coords, R, dRij_dRml, cosTheta, periodic = periodic)
+        dG1s,dG2s = [],[]
+        
+        
+    ## loops over different sets of parameters
     for para in para_pairs:
         bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-        G1.append(bp.G1(fc, distmatrix, elements, periodic=periodic))
-
-    G2 = []
+#        fc = bp.fc(R)
+#        dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
+        G1s.append(bp.G1(R, fc, periodic = periodic))
+        if derivs:
+            dG1s.append(bp.dG1_dRml(R, dRij_dRml, fc, dfc_dRml, periodic = periodic))
+ 
     for para in para_triplets:
         bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-        G2.append(bp.G2(fc, cosTheta, distmatrix, elements, periodic=periodic))
+#        fc = bp.fc(R)
+#        dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
+#        fcinv_dfc_dRml_sum = bp.fcinv_dfc_dRml_sum(fc, dfc_dRml)
+        G2,G2vals = bp.G2(R, fc, cosTheta, periodic = periodic)
+        G2s.append(G2)
+        if derivs:
+            dG2s.append(bp.dG2_dRml(Rij_dRij_dRml_sum, fcinv_dfc_dRml_sum, cosTheta, dcosTheta_dRml, G2vals, periodic = periodic))
 
-    fingerprints = [np.transpose(np.array(G1), [2, 1, 0]),
-                    np.transpose(np.array(G2), [2, 1, 0])]
-    orders = [1, 2]
+    fingerprints = [np.transpose(np.array(G1s), [2, 1, 0]),
+                    np.transpose(np.array(G2s), [2, 1, 0])]
+    interaction_dims = [1, 2]
 
-    if primes:
-        dRij_dRml = bp.dRij_dRml(coords, distmatrix, periodic=periodic)
-        dRijvec_dRml = bp.dRijvec_dRml(len(coords), periodic=periodic)
-        dfc_dRml = bp.dfc_dRml(distmatrix, dRij_dRml)
-        dcosTheta_dRml = bp.dcosTheta_dRml(coords, distmatrix, dRij_dRml,
-                                           dRijvec_dRml, cosTheta,
-                                           periodic=periodic)
-        dG1 = []
-        for para in para_pairs:
-            bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-            dG1.append(
-                bp.dG1_dRml(fc, dfc_dRml, distmatrix, dRij_dRml, elements,
-                            periodic=periodic))
+    if derivs:
+        fingerprints += [np.transpose(np.array(dG1s), [2, 3, 4, 1, 0]),
+                         np.transpose(np.array(dG2s), [2, 3, 4, 1, 0])]
+        interaction_dims += [1, 2]
 
-        dG2 = []
-        for para in para_triplets:
-            bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-            dG2.append(
-                bp.dG2_dRml(fc, dfc_dRml, cosTheta, dcosTheta_dRml, distmatrix,
-                            dRij_dRml,
-                            elements,
-                            periodic=periodic))
-
-        fingerprints += [np.transpose(np.array(dG1), [2, 3, 4, 1, 0]),
-                         np.transpose(np.array(dG2), [2, 3, 4, 1, 0])]
-        orders += [1, 2]
-
-    return fingerprints, orders
+    return fingerprints, interaction_dims
 
 
 def dummy_fingerprint(s_data, parameters, system_symbols):
@@ -226,29 +245,29 @@ def dummy_fingerprint(s_data, parameters, system_symbols):
     return fingerprints, [x.shape for x in data]
 
 
-def pad_fingerprints_by_interaction(terms, symbol_set, system_symbols, dims):
+def pad_fingerprints_by_interaction(terms, symbol_set, system_symbols, interaction_dims):
     """
 
     Args:
         terms: List of fingerprints.
         symbol_set: List of unique element names in structure as strings.
         system_symbols: List of system-wide unique element names as strings.
-        dims: Dimensionality of interaction(s).
+        interaction_dims: Dimensionality of interaction(s).
             (e.g. 1 for pairwise, 2 for triplets, [1,2] for both)
 
     Returns:
         padded: Padded fingerprints.
 
     """
-    assert len(dims) == len(terms)
+    assert len(interaction_dims) == len(terms)
     symbol_order = {k: v for v, k in enumerate(system_symbols)}
     symbol_set = sorted(symbol_set, key=symbol_order.get)
 
     system_groups = [list(combinations_with_replacement(system_symbols, dim))
-                     for dim in dims]
+                     for dim in interaction_dims]
 
     s_groups = [list(combinations_with_replacement(symbol_set, dim))
-                for dim in dims]
+                for dim in interaction_dims]
 
     group_deltas = [len(groups_f) - len(groups_i)
                     for groups_i, groups_f in zip(s_groups, system_groups)]
