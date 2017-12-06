@@ -237,7 +237,7 @@ if __name__ == '__main__':
         parameters = read_parameters_from_file(args.input2)
         apply_descriptors(input_name, output_name, sys_elements, parameters,
                           index=args.index, descriptor=args.descriptor,
-                          primes=args.primes)
+                          derivs=args.primes)
         validate_hdf5(output_name, sys_elements=sys_elements)
 
     elif args.action == 'collate':
