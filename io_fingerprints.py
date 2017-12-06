@@ -12,7 +12,7 @@ from io_structures import read_collated_structure, slice_from_str
 
 
 def apply_descriptors(input_name, output_name, sys_elements, parameters,
-                      descriptor='dummy', index=':', primes=False):
+                      descriptor='dummy', index=':', derivs=False):
     """
 
     Top-level function to create fingerprints from collated crystal/molecule
@@ -26,7 +26,7 @@ def apply_descriptors(input_name, output_name, sys_elements, parameters,
         descriptor (str): Descriptor to use to represent crystal/molecule data.
         sys_elements: List of system-wide unique element names as strings.
         index (str): Slice. Defaults to ':' for all entries.
-        primes (boolean): Whether to calculate derivatives of fingerprints
+        derivs (boolean): Whether to calculate derivatives of fingerprints
             with respect to cartesian coordinates.
 
     """
@@ -51,7 +51,7 @@ def apply_descriptors(input_name, output_name, sys_elements, parameters,
                                               parameters,
                                               sys_elements,
                                               descriptor=descriptor,
-                                              primes=primes)
+                                              derivs=derivs)
                     sys_entries.append(f_data)
                     s_count += 1
                 except AssertionError:
@@ -134,7 +134,7 @@ def load_fingerprints_from_file(filename, sys_elements, indexing=':',
 
 def make_fingerprint(h5f, s_data, s_name, parameters,
                      sys_elements, descriptor='dummy',
-                     primes=False):
+                     derivs=False):
     """
 
     Reads data for one crystal/molecule and corresponding property data
@@ -147,7 +147,7 @@ def make_fingerprint(h5f, s_data, s_name, parameters,
         parameters: Descriptor parameters.
         sys_elements: List of system-wide unique element names as strings.
         descriptor: Descriptor to use.
-        primes (boolean): Whether to calculate derivatives of fingerprints
+        derivs (boolean): Whether to calculate derivatives of fingerprints
             with respect to cartesian coordinates.
 
     """
@@ -158,7 +158,7 @@ def make_fingerprint(h5f, s_data, s_name, parameters,
                                            sys_elements)
     elif descriptor == 'bp':
         inputs, shapes = bp_fingerprint(s_data, parameters, sys_elements,
-                                        primes=primes)
+                                        derivs=derivs)
 
     (coords, element_set, element_counts,
      element_list, unit, periodic, energy_val) = s_data
