@@ -6,11 +6,10 @@ import ase
 from descriptors import BehlerParrinello
 from scipy.spatial.distance import cdist
 from itertools import combinations_with_replacement
-# from pymatgen.core.structure import Structure, IStructure
 from ase.build.supercells import make_supercell
 
 
-def bp_fingerprint(s_data, parameters, sys_elements, primes=False):
+def bp_fingerprint(s_data, parameters, system_elements, derivs=False):
     """
 
     Parrinello-Behler representation. Computes fingerprints for
@@ -25,22 +24,24 @@ def bp_fingerprint(s_data, parameters, sys_elements, primes=False):
     Args:
         s_data: List of data (output of read_collated_structure).
         parameters: Descriptor parameters.
-        sys_elements: List of system-wide unique element names as strings.
-        primes (boolean): Whether to calculate derivatives of fingerprints
+        system_elements: List of system-wide unique element names as strings.
+                         Given as an input to the command line.
+        derivs (boolean): Whether to calculate derivatives of fingerprints
             with respect to cartesian coordinates.
 
     """
+    
     (coords, elements_set, element_counts,
      element_list, unit_cell, periodic, property_value) = s_data
-    if not set(elements_set).issubset(set(sys_elements)):
+    if not set(elements_set).issubset(set(system_elements)):
         raise AssertionError(str('-'.join(set(elements_set))),
                              'not valid for',
-                             str('-'.join(set(sys_elements))))
+                             str('-'.join(set(system_elements))))
 
     if not len(element_list) == len(coords):
         print(element_list, coords.shape)
     assert len(element_list) == len(coords)
-    assert set(elements_set).issubset(set(sys_elements))
+    assert set(elements_set).issubset(set(system_elements))
 
     if periodic:
         unitcell = ase.Atoms(''.join(element_list),
@@ -48,22 +49,20 @@ def bp_fingerprint(s_data, parameters, sys_elements, primes=False):
                              cell=unit_cell)
 
         # generate supercell to include all neighbors of atoms in unitcell
-        supercell, N_unitcell = build_supercell(unitcell, R_c=6.0)
+        coords, element_list, N_unitcell = build_supercell(unitcell, R_c=6.0)
 
-        g_list, g_orders = represent_BP(np.asarray(supercell.positions),
-                                        supercell.get_chemical_symbols(),
-                                        parameters, periodic=True,
-                                        N_unitcell=N_unitcell,
-                                        primes=primes)
+        g_list, g_orders = represent_BP(np.asarray(coords),np.asarray(element_list),
+                                        parameters,derivs=False, 
+                                        periodic=True,N_unitcell=N_unitcell)
     else:
-        g_list, g_orders = represent_BP(coords, element_list,
-                                        parameters)
+        g_list, g_orders = represent_BP(np.asarray(coords),np.asarray(element_list),
+                                        parameters,derivs=False)
 
     data = pad_fingerprints_by_interaction(g_list, elements_set,
-                                           sys_elements, g_orders)
+                                           system_elements, g_orders)
     labels = ['G_1', 'G_2']
-    if primes:
-        labels += ['dG_1', 'dG2_']
+    if derivs:
+        labels += ['dG_1', 'dG_2']
     fingerprints = zip(labels, data)
     return fingerprints, [x.shape for x in data]
 
@@ -86,35 +85,37 @@ def build_supercell(unitcell, R_c):
 
     [n1, n2, n3] = [np.ceil(R_c / length) for length in
                     unitcell.get_cell_lengths_and_angles()[:3]]
+
     supercell = make_supercell(unitcell,
                                [[2 * n1 + 1, 0, 0],
                                 [0, 2 * n2 + 1, 0],
                                 [0, 0, 2 * n3 + 1]])
-    
-    ## it appears that the ASE make_supercell function keeps the original unitcell atoms as the first entries in the supercell
-    ## raise a fatal error if it's not the case!
-    assert np.all(np.isclose(supercell.get_positions()[:len(unitcell)],
-                             unitcell.get_positions()))
-    
+
     ## wrap supercell so that original unitcell is in the center
     supercell.wrap(center=(0.5 / (2 * n1 + 1),
                            0.5 / (2 * n2 + 1),
                            0.5 / (2 * n3 + 1)))
-    
-    ## trim away atoms which are not within the cutoff of any atom in the unitcell
-    coords, elements = [], []
-    coords1, elements1 = supercell.positions ,supercell.get_chemical_symbols()
-    R = cdist(np.asarray(coords1), np.asarray(coords1))
+
+    coords1, elements1 = supercell.get_positions() ,supercell.get_chemical_symbols()
+
+    ## sort atoms so that atoms in the original unitcell are listed first in the supercell
+    ## and trim away atoms that are not within cutiff distance of any atoms in the unitcell
+    coords, elements = unitcell.get_positions().tolist(), unitcell.get_chemical_symbols()
+    R = cdist(unitcell.get_positions(), np.asarray(coords1))
     for j in range(len(coords1)):
-        if np.any(np.less_equal(R[:len(unitcell.positions),j],R_c)):
+        if np.any(np.less(R[:,j],1E-08)):
+            ## if atom in unitcell, do not add to the list
+            continue
+        elif np.any(np.less_equal(R[:,j],R_c)):
+            ## if atom is within cutoff distance of an atom in the unitcell, add to the list
             coords.append(coords1[j])
-            elements.append(elements1[j])
+            elements.append(elements1[j])        
                 
     return coords, elements, len(unitcell.positions)
 
 
-def represent_BP(coords, elements, parameters=None, periodic=False,
-                 N_unitcell=None, derivs=False):
+def represent_BP(coords, elements, system_symbols, parameters=None, derivs=False,
+                 periodic=False, N_unitcell=None):
     """
     computes the Behler-Parrinello atom-based descriptors for each atom in a given structure
 
@@ -128,10 +129,10 @@ def represent_BP(coords, elements, parameters=None, periodic=False,
         eta: exponent term dampener; default = 1.0
         lambda_: angular expansion switch +1 or -1; default = 1.0
         zeta: angular expansion degree; default = 1.0
+    derivs: calculate derivatives of fingerprints.
     periodic: boolean (False = cluster/molecule, True = 3D periodic structure)
     N_unitcell: number of atoms in the unitcell
                 (only applicable for periodic structures)
-    derivs: calculate derivatives of fingerprints.
 
     Returns
     -------
@@ -155,13 +156,17 @@ def represent_BP(coords, elements, parameters=None, periodic=False,
     para_pairs, para_triplets = parameters
 
     bp = BehlerParrinello()
+    
     bp._elements = elements
-    bp._element_pairs = list(set(combinations_with_replacement(np.unique(elements),2)))
+    bp._element_order = {k: v for v, k in enumerate(system_symbols)}
+    bp._elements_unique = sorted(np.unique(elements), key=bp._element_order.get)
+    bp._element_pairs = list(combinations_with_replacement(bp._elements_unique,2))
+
     if N_unitcell == None:
         bp._N_unitcell = len(coords)
     else:
         bp._N_unitcell = N_unitcell
-
+#    print (N_unitcell,len(coords))
 
     ## quantities which are only computed once for every structure
     ## if r_c is fixed, then we can compute the cutoff functions here as well...
@@ -219,15 +224,14 @@ def dummy_fingerprint(s_data, parameters, system_symbols):
         system_symbols: List of system-wide unique element names as strings.
 
     """
-    (coords, symbol_set, species_counts,
+    (coords, structure_symbols, species_counts,
      species_list, unit, periodic, property_value) = s_data
-    assert set(symbol_set).issubset(set(system_symbols))
+    assert set(structure_symbols).issubset(set(system_symbols))
     para_pairs, para_triplets = parameters
 
     n_atoms = len(coords)
-    pair_num = len(list(combinations_with_replacement(symbol_set, 1)))
-    triplet_num = len(list(combinations_with_replacement(symbol_set,
-                                                         2)))
+    pair_num = len(list(combinations_with_replacement(structure_symbols, 1)))
+    triplet_num = len(list(combinations_with_replacement(structure_symbols,2)))
     para_num_1 = para_pairs.shape[0]
     para_num_2 = para_triplets.shape[0]
 
@@ -238,7 +242,7 @@ def dummy_fingerprint(s_data, parameters, system_symbols):
     # g_2.shape ~ (#atoms x
     #              [#combinations of species with replacement] x
     #              #triplet_parameters
-    data = pad_fingerprints_by_interaction([g_1, g_2], symbol_set,
+    data = pad_fingerprints_by_interaction([g_1, g_2], structure_symbols,
                                            system_symbols, [1, 2])
     labels = ['dummy_pairs', 'dummy_triplets']
     fingerprints = zip(labels, data)

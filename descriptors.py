@@ -54,6 +54,7 @@ class BehlerParrinello():
         self.eta = eta
         self.zeta = zeta
         self.lambda_ = lambda_
+        self._system_elements = None
         self._elements = None
         self._element_pairs = None
         self._N_unitcell = None
@@ -148,14 +149,12 @@ class BehlerParrinello():
         
         N_unit = self._N_unitcell
         
-        elements = numpy.array(self._elements)
-        
-        values = numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2) * fc[:N_unit,:]       
+        values = numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2) * fc[:N_unit,:]
         
         G1 = []
-        for ele in numpy.unique(sorted(elements)):
+        for ele in self._elements_unique:
             ## find the positions of all atoms of type "ele"
-            idxs = numpy.where(elements == ele)[0]
+            idxs = numpy.where(self._elements == ele)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
             G1.append(values[:, idxs].sum(axis=1))
@@ -194,9 +193,6 @@ class BehlerParrinello():
         """
         
         N_unit = self._N_unitcell
-        
-        elements = numpy.array(self._elements)
-        element_pairs = sorted(numpy.array(self._element_pairs),key=lambda x: (x[0],x[1]))
        
         values = (2 ** (1 - self.zeta) * (1 + self.lambda_ * cosTheta) ** self.zeta 
                   * numpy.exp(-self.eta * R[:N_unit,:,None]**2)
@@ -205,9 +201,9 @@ class BehlerParrinello():
                   * fc[:N_unit,:,None] * fc[:N_unit,None,:] * fc[None,:,:])
 
         G2 = []
-        for [ele1,ele2] in element_pairs:
+        for [ele1,ele2] in self._element_pairs:
             ## find the positions of all pairs of atoms of type (ele1,ele2)
-            idxj,idxk = numpy.where(elements==ele1)[0],numpy.where(elements==ele2)[0]
+            idxj,idxk = numpy.where(self._elements==ele1)[0],numpy.where(self._elements==ele2)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
             if ele1 != ele2:
@@ -416,16 +412,14 @@ class BehlerParrinello():
         
         N_unit = self._N_unitcell
         
-        elements = numpy.array(self._elements)
-        
         values = ((dRij_dRml[:N_unit,:,:,:] * (-2*self.eta * (R[:N_unit,:] - self.r_s) * fc[:N_unit,:])[:,:,None,None]
                     + dfc_dRml[:N_unit,:,:,:])
                     * numpy.exp(-self.eta * (R[:N_unit,:] - self.r_s) ** 2)[:,:,None,None])   
         
         dG1 = []
-        for ele in numpy.unique(sorted(elements)):
+        for ele in self._elements_unique:
             ## find the positions of all atoms of type "ele"
-            idxs = numpy.where(elements == ele)[0]
+            idxs = numpy.where(self._elements == ele)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
             dG1.append(values[:,idxs,:,:].sum(axis=1))
@@ -457,9 +451,6 @@ class BehlerParrinello():
              The atom-wise dG^2 evaluations.
             
         """
-        
-        elements = numpy.array(self._elements)
-        element_pairs = sorted(numpy.array(self._element_pairs),key=lambda x: (x[0],x[1]))
       
         with numpy.errstate(divide='ignore', invalid='ignore'):
             values = 1. / (1 + self.lambda_ * cosTheta)    
@@ -468,9 +459,9 @@ class BehlerParrinello():
         values = G2vals[:,:,:,None,None] * (self.lambda_ * self.zeta * values - 2*self.eta * Rij_dRij_dRml_sum + fcinv_dfc_dRml_sum)
                    
         dG2 = []
-        for [ele1,ele2] in element_pairs:
+        for [ele1,ele2] in self._element_pairs:
             ## find the positions of all pairs of atoms of type (ele1,ele2)
-            idxj,idxk = numpy.where(elements==ele1)[0],numpy.where(elements==ele2)[0]
+            idxj,idxk = numpy.where(self._elements==ele1)[0],numpy.where(self._elements==ele2)[0]
             ## and sum over them
             ## each row corresponds to each atom in the structure
             
