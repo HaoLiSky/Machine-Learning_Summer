@@ -52,10 +52,12 @@ def bp_fingerprint(s_data, parameters, system_elements, derivs=False):
         coords, element_list, N_unitcell = build_supercell(unitcell, R_c=6.0)
 
         g_list, g_orders = represent_BP(np.asarray(coords),np.asarray(element_list),
+                                        system_elements, 
                                         parameters,derivs=False, 
                                         periodic=True,N_unitcell=N_unitcell)
     else:
         g_list, g_orders = represent_BP(np.asarray(coords),np.asarray(element_list),
+                                        system_elements, 
                                         parameters,derivs=False)
 
     data = pad_fingerprints_by_interaction(g_list, elements_set,
