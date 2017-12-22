@@ -6,11 +6,9 @@ import os
 import re
 import h5py
 import traceback
-
 import numpy as np
-from itertools import islice
 from ase.io import iread
-from io_hdf5 import write_to_group, read_from_group
+from nnf.io_utils import slice_from_str, write_to_group, read_from_group
 
 
 def collate_structures(input_name, output_name, sys_elements,
@@ -156,7 +154,7 @@ def parse_property(data, loose=False, keyword=None, index=':'):
         index (str): Slice. Must match in parse_ase.
 
     Returns:
-        energy_list: Property values as floats or dictionary of
+        s_energies: Property values as floats or dictionary of
             filename-value pairs if loose.
 
     """
@@ -280,53 +278,3 @@ def read_collated_structure(h5f, s_name, sys_elements):
 
     return [coords, element_set, element_counts,
             elements_list, unit_vectors, periodic, energy_val]
-
-
-def slice_from_str(string):
-    """
-
-    Adapted from ase.io.formats.py to parse string into slice.
-
-    Args:
-        string (str): Slice as string.
-
-    Returns:
-        slice (slice): Slice.
-
-    """
-    if ':' not in string:
-        return int(string)
-    i = []
-    for s in string.split(':'):
-        if s == '':
-            i.append(None)
-        else:
-            i.append(int(s))
-    i += (3 - len(i)) * [None]
-    return slice(*i)
-
-
-def slice_generator(generator, string):
-    """
-
-    Applies slicing to a generator.
-
-    Args:
-        generator: The generator to convert.
-        string (str): Slice as string.
-
-    Returns:
-        An itertools.islice iterator.
-
-    """
-    if ':' not in string:
-        return int(string)
-    i = []
-    for s in string.split(':'):
-        if s == '':
-            i.append(None)
-        else:
-            i.append(int(s))
-    i += (3 - len(i)) * [None]
-    print(i)
-    return islice(generator, *i)

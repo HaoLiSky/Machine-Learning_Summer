@@ -6,9 +6,9 @@ import h5py
 import traceback
 
 import numpy as np
-from fingerprints import bp_fingerprint, dummy_fingerprint
-from io_hdf5 import read_from_group, write_to_group
-from io_structures import read_collated_structure, slice_from_str
+from nnf.fingerprints import bp_fingerprint, dummy_fingerprint
+from nnf.io_utils import read_from_group, write_to_group
+from nnf.io_structures import read_collated_structure, slice_from_str
 
 
 def apply_descriptors(input_name, output_name, sys_elements, parameters,
@@ -69,15 +69,15 @@ def apply_descriptors(input_name, output_name, sys_elements, parameters,
                                       for entries in sys_entries])
             write_to_group(h5o, 'system',
                            {'sys_elements': np.string_(sys_elements)},
-                           {'pair_params': parameters[0],
+                           {'pair_params'   : parameters[0],
                             'triplet_params': parameters[1]})
 
             write_to_group(h5o, 'system',
                            {},
-                           {'sys_entries': sys_entries,
+                           {'sys_entries' : sys_entries,
                             's_names_list': s_names_list},
                            dict_dset_types={'s_names_list': s_names_list.dtype,
-                                            'sys_entries': sys_entries.dtype},
+                                            'sys_entries' : sys_entries.dtype},
                            maxshape=(None,))
 
 
@@ -164,10 +164,10 @@ def make_fingerprint(h5f, s_data, s_name, parameters,
      element_list, unit, periodic, energy_val) = s_data
 
     dict_dsets = {label: term for label, term in inputs}
-    dict_attrs = {'natoms': len(coords),
-                  'element_set': np.string_(element_set),
+    dict_attrs = {'natoms'        : len(coords),
+                  'element_set'   : np.string_(element_set),
                   'element_counts': element_counts,
-                  'energy': energy_val}
+                  'energy'        : energy_val}
     group_name = 'structures/{}'.format(s_name)
     write_to_group(h5f, group_name, dict_attrs, dict_dsets)
 
@@ -283,7 +283,7 @@ def pad_fingerprint_by_element(input_data, compositions, final_layers):
             secondary_dims = len(data_shape) - 1
             pad_widths = [(natoms_diff, 0)] + [(0, 0)] * secondary_dims
             # tuple of (header_pad, footer_pad) per dimension
-            data_f = np.pad(np.zeros(data.shape), pad_widths, 'edge')
+            data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * -1
 
             n = len(initial_layers)
             slice_pos = [sum(initial_layers[:i + 1])
