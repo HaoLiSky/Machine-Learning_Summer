@@ -2,183 +2,190 @@
 This module provides input/output functions for fingerprints
 using descriptors.
 """
+import os
 import h5py
 import traceback
-
 import numpy as np
-from nnf.fingerprints import bp_fingerprint, dummy_fingerprint
-from nnf.io_utils import read_from_group, write_to_group
-from nnf.io_structures import read_collated_structure, slice_from_str
+from nnf.fingerprints import bp_fingerprint
+from nnf.io_utils import slice_from_str, read_from_group, write_to_group
+from nnf.io_structures import CollatedMolecule
 
 
-def apply_descriptors(input_name, output_name, sys_elements, parameters,
-                      descriptor='dummy', index=':', derivs=False):
+class Fingerprinter:
     """
-
-    Top-level function to create fingerprints from collated crystal/molecule
-    data. Reads from input .hdf5, creates fingerprints, and writes to output
+    Top-level function to create fingerprints from collated
+    crystal/molecule
+    data. Reads from input .hdf5, creates fingerprints, and writes to
+    output
      .hdf5.
 
     Args:
-        input_name (str): Filename of .hdf5 for reading crystal/molecule data.
-        parameters: List of descriptor parameters.
         output_name (str): Filename of .hdf5 for writing fingerprint data.
-        descriptor (str): Descriptor to use to represent crystal/molecule data.
+        parameters_file (str): Filename of descriptor parameter data.
         sys_elements: List of system-wide unique element names as strings.
+    """
+    def __init__(self, output_name, parameters_file, sys_elements):
+        self.output_name = output_name
+        self.sys_elements = sys_elements
+        self.element_order = {k: v for v, k in enumerate(sys_elements)}
+        self.entries = []
+        self.m_count = 0
+        self.parameters = read_parameters_from_file(parameters_file)
+
+    def make_fingerprints(self, filename,
+                          descriptor, index, derivs=False):
+        """
+        filename (str): Filename of .hdf5 for reading crystal/molecule
+        data.
+        descriptor (str): Descriptor to use to represent
+        crystal/molecule data.
         index (str): Slice. Defaults to ':' for all entries.
         derivs (boolean): Whether to calculate derivatives of fingerprints
             with respect to cartesian coordinates.
+        """
+        if os.path.isfile(self.output_name):
+            self.combine_fingerprints(self.output_name, add_to_output=False)
+        else:
+            self.entries = []
+            self.m_count = 0
+        with h5py.File(filename, 'r', libver='latest') as h5i:
+            m_names = h5i.require_group('molecules').keys()
+            with h5py.File(self.output_name, 'a', libver='latest') as h5o:
+                m_tot = len(m_names)
+                m_count_start = int(self.m_count)
+                f_count = 0
+                for j, m_name in enumerate(m_names[slice_from_str(index)]):
+                    print('processing', str(j + 1).rjust(10), '/',
+                          str(m_tot).rjust(10), end='\r')
+                    try:
+                        path = 'molecules/' + m_name
+                        mol = CollatedMolecule.from_file(h5i,
+                                                         path,
+                                                         self.sys_elements)
+                        m_name_new = '{}.{}'.format('_'.join(m_name.
+                                                             split('_')[:-1]),
+                                                    self.m_count)
+                        f_data = make_fingerprint(h5o, mol,
+                                                  m_name_new,
+                                                  self.parameters,
+                                                  self.sys_elements,
+                                                  descriptor=descriptor,
+                                                  derivs=derivs)
+                        self.entries.append(f_data)
+                        self.m_count += 1
+                    except AssertionError:
+                        print('error in', m_name, end='\n\n')
+                        traceback.print_exc()
+                        f_count += 1
+                        continue
+                print(str(m_count_start - self.m_count),
+                      'new fingerprints created in', self.output_name)
+                if f_count > 0:
+                    print(str(f_count), 'fingerprint(s) failed')
+            self.update_system_details(h5i)
 
-    """
+    def combine_fingerprints(self, filename, add_to_output=True):
+        with h5py.File(filename, 'a', libver='latest') as h5i:
+            m_count = len(h5i.require_group('fingerprints').keys())
+            m_count_start = int(m_count)
+            print(m_count_start, 'fingerprints in file.')
+            try:
+                entries_list = h5i['system/fingerprint_entries'][()].tolist()
+                self.entries.extend([line.split(b';')
+                                     for line in entries_list])
+            except KeyError:
+                pass
+            if add_to_output:
+                with h5py.File(self.output_name, libver='latest') as h5o:
+                    m_names = h5i.require_group('molecules').keys()
+                    for j, m_name in enumerate(m_names):
+                        group_path = 'molecules/' + m_name
+                        src = h5i.require_group(group_path)
+                        dest = h5o.require_group(group_path)
+                        src.copy(dest)
+                self.update_system_details(h5i)
 
-    with h5py.File(input_name, 'r', libver='latest') as h5i:
-        s_names = [name.decode('utf-8')
-                   for name in h5i['system']['s_names_list'][()]]
-        with h5py.File(output_name, 'a', libver='latest') as h5o:
-            sys_entries = []
-            s_tot = len(s_names)
-            s_count = 0
-            f_count = 0
-            for j, s_name in enumerate(s_names[slice_from_str(index)]):
-                print('processing', str(j + 1).rjust(10), '/',
-                      str(s_tot).rjust(10), end='\r')
-                try:
-                    s_data = read_collated_structure(h5i, s_name, sys_elements)
-                    s_name_new = '{}_{}'.format('_'.join(s_name.
-                                                         split('_')[:-1]),
-                                                s_count)
-                    f_data = make_fingerprint(h5o, s_data, s_name_new,
-                                              parameters,
-                                              sys_elements,
-                                              descriptor=descriptor,
-                                              derivs=derivs)
-                    sys_entries.append(f_data)
-                    s_count += 1
-                except AssertionError:
-                    print('error in', s_name, end='\n\n')
-                    traceback.print_exc()
-                    f_count += 1
-                    continue
-            print(str(s_count), 'new fingerprints created in', output_name)
-            if f_count > 0:
-                print(str(f_count), 'fingerprint(s) failed')
+    def update_system_details(self, h5f):
+        entries = np.asarray([b';'.join(entry)
+                              for entry in self.entries])
+        write_to_group(h5f, 'system',
+                       {'sys_elements': np.string_(self.sys_elements)},
+                       {'pair_params'   : self.parameters[0],
+                        'triplet_params': self.parameters[1]})
 
-            s_names_list = np.asarray([np.string_(s_name)
-                                       for s_name in s_names])
-            sys_entries = np.asarray([b';'.join(entries)
-                                      for entries in sys_entries])
-            write_to_group(h5o, 'system',
-                           {'sys_elements': np.string_(sys_elements)},
-                           {'pair_params'   : parameters[0],
-                            'triplet_params': parameters[1]})
+        write_to_group(h5f, 'system',
+                       {},
+                       {'fingerprint_entries': entries},
+                       dict_dset_types={'fingerprint_entries':
+                                            entries.dtype},
+                       maxshape=(None,))
+        self.summary()
 
-            write_to_group(h5o, 'system',
-                           {},
-                           {'sys_entries' : sys_entries,
-                            's_names_list': s_names_list},
-                           dict_dset_types={'s_names_list': s_names_list.dtype,
-                                            'sys_entries' : sys_entries.dtype},
-                           maxshape=(None,))
+    def summary(self):
+        sizes = [int(entry[1]) for entry in self.entries]
+        compositions = [entry[3].decode('utf-8') for entry in self.entries]
+        print('Entries:', len(self.entries))
+        shape_set = set([entry[4] for entry in self.entries])
+        shapes = [shape.decode('utf-8') for shape in shape_set]
+        energies = [float(entry[-1]) for entry in self.entries]
+        print('System Elements:', self.sys_elements)
+        print('Min Size:', np.min(sizes), ':', compositions[np.argmin(sizes)])
+        print('Max Size:', np.max(sizes), ':', compositions[np.argmax(sizes)])
+        print('Size std:', np.std(sizes))
+        print('Fingerprint Shapes:', ';'.join(shapes))
+        print('Min energy:', np.min(energies))
+        print('Max energy:', np.max(energies))
+        print('Energy std:', np.std(energies))
 
-
-def load_fingerprints_from_file(filename, sys_elements, indexing=':',
-                                pad=False, per_structure=False):
-    """
-
-    Top-level function to load fingerprints and corresponding structure
-    attributes from .hdf5 file into numpy arrays.
-
-    Args:
-        filename (str): .hdf5 filename.
-        sys_elements: List of system-wide unique element names as strings.
-        indexing (str): Slice. Defaults to ':' for all entries.
-        pad: Whether to pad by elements to produce equal-length fingerprints
-            per type.
-        per_structure: Whether to return of list of (G_1, G_2) for each
-            structure or list of all G1 & list of all G2
-
-    Returns:
-        List of fingerprints (either per structure or per type)
-        and list of element counts per structure.
-
-    """
-    with h5py.File(filename, 'r', libver='latest') as h5f:
-        s_names = [line.split(b';')[0].decode('utf-8')
-                   for line in h5f['system']['sys_entries'][()]]
-        fingerprint_set_list = []
-        element_counts_per_structure = []
-        energies = []
-        for j, s_name in enumerate(s_names[slice_from_str(indexing)]):
-            [dsets_dict, natoms,
-             element_set, element_counts,
-             elements_list, energy_val] = read_fingerprint(h5f,
-                                                           s_name,
-                                                           sys_elements)
-            element_counts_per_structure.append(element_counts)
-            energies.append(energy_val)
-            fingerprint_set_list.append(list(dsets_dict.values()))
-    max_element_counts = np.amax(element_counts_per_structure, axis=0)
-    if pad:
-        fingerprints = pad_fingerprint_by_element(fingerprint_set_list,
-                                                  element_counts_per_structure,
-                                                  max_element_counts)
-    else:
-        fingerprints = fingerprint_set_list
-
-    if per_structure:
-        return fingerprints, element_counts_per_structure
-    else:
-        g1_list, g2_list = zip(*fingerprints)
-        return g1_list, g2_list, element_counts_per_structure
+    def export_entries(self, filename):
+        header = 'Name,Size,Elements,Composition,Fingerprint Shapes,Energy;\n'
+        with open(filename, 'w') as fil:
+            lines = [b','.join(line).decode('utf-8')
+                     for line in self.entries]
+            text = header + ';\n'.join(lines)
+            fil.write(text)
 
 
-def make_fingerprint(h5f, s_data, s_name, parameters,
-                     sys_elements, descriptor='dummy',
+def make_fingerprint(h5f, mol, m_name, parameters,
+                     sys_elements, descriptor='bp',
                      derivs=False):
     """
-
     Reads data for one crystal/molecule and corresponding property data
-    from .hdf5 file.
+    from .hdf5 file and writes fingerprint.
 
     Args:
         h5f: h5py object for writing.
-        s_data: List of data (output of read_collated_structure).
-        s_name (str): Atoms' identifier to be used as group name in h5o.
+        mol: CollatedMolecule object.
+        m_name (str): Molecule's identifier to be used as group name in h5o.
         parameters: Descriptor parameters.
         sys_elements: List of system-wide unique element names as strings.
         descriptor: Descriptor to use.
         derivs (boolean): Whether to calculate derivatives of fingerprints
             with respect to cartesian coordinates.
-
     """
-    inputs = []
-    shapes = []
-    if descriptor == 'dummy':
-        inputs, shapes = dummy_fingerprint(s_data, parameters,
-                                           sys_elements)
-    elif descriptor == 'bp':
-        inputs, shapes = bp_fingerprint(s_data, parameters, sys_elements,
-                                        derivs=derivs)
 
-    (coords, element_set, element_counts,
-     element_list, unit, periodic, energy_val) = s_data
+    if descriptor == 'bp':
+        inputs, shapes = bp_fingerprint(mol, parameters, sys_elements,
+                                        derivs=derivs)
+    else:
+        raise ValueError
 
     dict_dsets = {label: term for label, term in inputs}
-    dict_attrs = {'natoms'        : len(coords),
-                  'element_set'   : np.string_(element_set),
-                  'element_counts': element_counts,
-                  'energy'        : energy_val}
-    group_name = 'structures/{}'.format(s_name)
+    dict_attrs = {'natoms'        : len(mol.coords),
+                  'element_set'   : np.string_(mol.element_set),
+                  'element_counts': mol.element_counts,
+                  'energy'        : mol.energy_val}
+    group_name = 'fingerprints/' + m_name
     write_to_group(h5f, group_name, dict_attrs, dict_dsets)
 
     fingerprint_shapes = np.string_(','.join([str(shape)
                                               for shape in shapes]))
-    f_data = [np.string_(s_name),
-              np.string_(str(len(coords))),
-              np.string_(','.join(element_set)),
-              np.string_(','.join([str(x) for x in element_counts])),
+    f_data = [np.string_(mol.m_name),
+              np.string_(str(len(mol.coords))),
+              np.string_(','.join(mol.element_set)),
+              np.string_(','.join([str(x) for x in mol.element_counts])),
               fingerprint_shapes,
-              np.string_(energy_val)]
+              np.string_(mol.energy_val)]
 
     return f_data
 
@@ -193,7 +200,6 @@ def read_parameters_from_file(params_file):
     Returns:
         pairs: List of parameters for generating pair functions
         triplets: List of parameters for generating triplet functions
-
     """
 
     with open(params_file, 'r') as fil:
@@ -214,89 +220,47 @@ def read_parameters_from_file(params_file):
     return np.asarray(pairs), np.asarray(triplets)
 
 
-def read_fingerprint(h5f, s_name, sys_elements):
+class Fingerprint:
     """
-
     Reads fingerprints and attributes for one crystal/molecule
     and correpsonding property data from .hdf5 file.
-
-    Args:
-        h5f: h5py object for reading.
-        s_name (str): Group name in h5f corresponding to Atoms' identifier.
-        sys_elements: List of system-wide unique element names as strings.
-
-    Returns:
-        dsets_dict: Dictionary of fingerprint names and their ndarrays.
-        natoms (int): Number of atoms in structure
-        element_set: List of unique element names in structure as strings.
-        elements_counts: List of occurences for each element type.
-        elements_list: List of element namestring for each atom.
-        energy_val (float): Corresponding property value.
-
+    
+    Attributes:
+       dsets_dict: Dictionary of fingerprint names and their ndarrays.
+       natoms (int): Number of atoms in structure
+       elements_set: List of unique element names in structure as strings.
+       element_counts: List of occurences for each element type.
+       elements_list: List of element namestring for each atom.
+       energy_val (float): Corresponding property value.
     """
-    grouppath = 'structures/{}'.format(s_name)
-    attrs_dict, dsets_dict = read_from_group(h5f,
-                                             grouppath)
+    def __init__(self):
+        self.attrs_dict = {}
+        self.dsets_dict = {}
+        self.natoms = 0
+        self.elements_set = []
+        self.element_counts = []
+        self.elements_list = []
+        self.energy_val = 0.0
+        
+    def from_file(self, h5f, path, sys_elements):
+        """
+        Args:
+            h5f: h5py object for reading.
+            path (str): path in h5f to molecule.
+            sys_elements: List of system-wide unique element names as strings.
+        """
+        self.attrs_dict, self.dsets_dict = read_from_group(h5f, path)
 
-    natoms = attrs_dict['natoms']
-    element_set = [symbol.decode('utf-8')
-                   for symbol in attrs_dict['element_set']]
-    element_counts = attrs_dict['element_counts']
-    assert len(sys_elements) == len(element_counts)
-    elements_list = []
-    for symbol, ccount in zip(sys_elements, element_counts):
-        elements_list += [symbol] * ccount
-    assert len(elements_list) == natoms
-    energy_val = attrs_dict['energy']
+        self.natoms = self.attrs_dict['natoms']
+        self.elements_set = [symbol.decode('utf-8')
+                             for symbol in self.attrs_dict['element_set']]
+        self.element_counts = self.attrs_dict['element_counts']
+        assert len(sys_elements) == len(self.element_counts)
 
-    return [dsets_dict, natoms, element_set, element_counts,
-            elements_list, energy_val]
+        for symbol, ccount in zip(sys_elements, self.element_counts):
+            self.elements_list += [symbol] * ccount
+        assert len(self.elements_list) == self.natoms
+        self.energy_val = self.attrs_dict['energy']
 
-
-def pad_fingerprint_by_element(input_data, compositions, final_layers):
-    """
-
-    Slice fingerprint arrays by elemental composition and
-    arrange slices onto empty arrays to produce sets of padded fingerprints
-    (i.e. equal length for each type of fingerprint)
-
-    Args:
-        input_data: List of lists of
-            [g1(n, ...), g2(n, ...), ... ] where n = sum(comp)
-        compositions: list of "layer" heights (per element) in # of atoms
-        final_layers: list of desired "layer" heights (per element)
-            in # of atoms
-    Returns:
-        output_data: List of lists of
-            [g1(N, ...), g2(N, ...), ... ] where N = sum(max_per_element)
-
-    """
-    new_input_data = []
-    for structure, initial_layers in zip(input_data, compositions):
-        assert len(final_layers) == len(initial_layers)
-        new_fingerprints = []
-        for data in structure:  # e.g. G1, G2, ...
-            data_shape = data.shape
-            natoms_i = data_shape[0]
-            natoms_f = sum(final_layers)
-            natoms_diff = natoms_f - natoms_i
-            secondary_dims = len(data_shape) - 1
-            pad_widths = [(natoms_diff, 0)] + [(0, 0)] * secondary_dims
-            # tuple of (header_pad, footer_pad) per dimension
-            data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * -1
-
-            n = len(initial_layers)
-            slice_pos = [sum(initial_layers[:i + 1])
-                         for i in range(n - 1)]
-            # row indices to slice to create n sections
-            data_sliced = np.split(data, slice_pos)
-
-            start_pos = [sum(initial_layers[:i]) for i in range(n)]
-            # row indices to place sections of correct length
-
-            for sect, start in zip(data_sliced, start_pos):
-                end = start + len(sect)
-                data_f[start:end, ...] = sect
-            new_fingerprints.append(np.asarray(data_f))
-        new_input_data.append(new_fingerprints)
-    return new_input_data
+    def to_file(self, h5o, path):
+        write_to_group(h5o, path, self.attrs_dict, self.dsets_dict)
