@@ -15,10 +15,9 @@ from keras.layers import ActivityRegularization
 from keras.optimizers import Nadam, Adadelta, Adam, SGD
 from keras.callbacks import ModelCheckpoint
 from keras.callbacks import TerminateOnNaN
-from nnf.io_utils import generate_tag
+from nnf.io_utils import generate_tag, SettingsParser
 from nnf.custom_keras_utils import spread, mean_pred, LossHistory, rmse_loss
 from nnf.batch_preprocess import load_preprocessed
-from nnf.framework import SettingsParser
 
 activation_list = ['softplus',
                    'relu',
@@ -27,7 +26,7 @@ activation_list = ['softplus',
                    'softplus']
 optimizer_list = [SGD(lr=0.1, decay=0.001,
                       momentum=0.6, nesterov=True),
-                  Adam(),
+                  Adam(clipnorm=1.0),
                   Nadam(),
                   Adadelta(),
                   'rmsprop',
@@ -312,8 +311,8 @@ class Network:
         settings_set = SettingsParser('GridSearch').read(settings_file)
         keys = list(settings_set.keys())
         values = list(settings_set.values())
-        range_keys = [keys[values.index(range_)]
-                      for range_ in values
+        range_keys = [keys[j]
+                      for j, range_ in enumerate(values)
                       if len(range_) > 1]
         print('\nGrid Search:', ','.join(range_keys))
 
@@ -321,16 +320,16 @@ class Network:
 
         run_entries = []
         for i, setting_combination in enumerate(setting_combinations):
+            print('\n\nRun {}:'.format(i+1), end='   ')
             run_settings = {k: v for k, v in zip(keys, setting_combination)}
-            print('\n\nRun {}:'.format(i))
+            entry = [str(val) for val in setting_combinations]
             for key in range_keys:
-                print('{} = {}'.format(key, run_settings[key]))
-            entry = list(setting_combination)
+                print('{} = {}'.format(key, run_settings[key]), end='   ')
             self.load_data(run_settings['inputs_name'],
                            run_settings['partitions_file'],
                            run_settings)
             run_testing_loss = self.train_network(run_settings)
-            entry.append(run_testing_loss)
+            entry.append('{0:.4f}'.format(run_testing_loss))
             run_entries.append(entry)
 
         with open(filename, 'w') as search_record:
@@ -354,10 +353,11 @@ if __name__ == '__main__':
 
     input_name = settings['inputs_name']
     partitions_file = settings['partitions_file']
+    output_name = settings['outputs_name']
 
     network = Network(settings)
     if args.grid:
-        network.grid_search(args.settings_file, 'grid_results.csv')
+        network.grid_search(args.settings_file, output_name)
     else:
         network.load_data(input_name, partitions_file, settings)
         final_loss = network.train_network(settings)

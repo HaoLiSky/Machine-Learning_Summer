@@ -58,13 +58,13 @@ def bp_fingerprint(mol, parameters, sys_elements, derivs=False):
         g_list, g_orders = represent_BP(np.asarray(coords),
                                         np.asarray(elements_list),
                                         sys_elements,
-                                        parameters, derivs=False,
+                                        parameters, derivs=derivs,
                                         periodic=True, N_unitcell=N_unitcell)
     else:
         g_list, g_orders = represent_BP(np.asarray(coords),
                                         np.asarray(elements_list),
                                         sys_elements,
-                                        parameters, derivs=False)
+                                        parameters, derivs=derivs)
 
     data = pad_fingerprints_by_interaction(g_list, element_set,
                                            sys_elements, g_orders)

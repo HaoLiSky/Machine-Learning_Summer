@@ -8,8 +8,8 @@ import h5py
 import numpy as np
 from nnf.fingerprints import bp_fingerprint
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
+from nnf.io_utils import SettingsParser
 from nnf.batch_collate import CollatedMolecule
-from nnf.framework import SettingsParser
 
 
 class Fingerprint:
@@ -323,7 +323,8 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser(description=description)
     argparser.add_argument('--settings_file', '-s', default='settings.cfg',
                            help='Filename of settings.')
-    argparser.add_argument('--verbosity', '-v', action='count')
+    argparser.add_argument('--verbosity', '-v', default=0,
+                           action='count')
     argparser.add_argument('--export', '-E', action='store_true',
                            help='Export entries to csv.')
     args = argparser.parse_args()

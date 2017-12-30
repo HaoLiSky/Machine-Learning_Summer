@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 from ase.io import iread
 from nnf.io_utils import slice_from_str, write_to_group, read_from_group
-from nnf.framework import SettingsParser
+from nnf.io_utils import SettingsParser
 
 
 class CollatedMolecule:
@@ -114,7 +114,6 @@ class CollatedMolecule:
         write_to_group(h5o, path, self.attrs_dict, self.dsets_dict)
         data = [np.string_(path.split('/')[-1]),
                 np.string_(str(np.sum(self.element_counts))),
-                np.string_('-'.join(self.elements_list)),
                 np.string_('-'.join([str(x) for x in self.element_counts])),
                 np.string_(str(self.periodic)),
                 np.string_(str(self.coords.shape).replace(',', '-')),
@@ -278,8 +277,7 @@ class BatchCollator:
                 self.entries.extend([line.split(b';')
                                      for line in entries_list])
                 sources_list = h5i['system/collated_sources'][()].tolist()
-                self.sources.extend([line.split(b';')
-                                     for line in sources_list])
+                self.sources.extend([line for line in sources_list])
             except KeyError:
                 pass
             if add_to_output:
@@ -418,7 +416,8 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser(description=description)
     argparser.add_argument('--settings_file', '-s', default='settings.cfg',
                            help='Filename of settings.')
-    argparser.add_argument('--verbosity', '-v', action='count')
+    argparser.add_argument('--verbosity', '-v', default=0,
+                           action='count')
     argparser.add_argument('--export', '-E', action='store_true',
                            help='Export entries to csv.')
     args = argparser.parse_args()
