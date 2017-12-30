@@ -316,8 +316,8 @@ class BatchCollator:
                        {'sys_elements': np.string_(self.sys_elements)},
                        {'collated_entries': entries,
                         'collated_sources': sources},
-                       dict_dset_types={'collated_entries': entries.dtype,
-                                        'collated_sources': sources.dtype},
+                       dset_types={'collated_entries': entries.dtype,
+                                   'collated_sources': sources.dtype},
                        maxshape=(None,))
         self.summary()
 

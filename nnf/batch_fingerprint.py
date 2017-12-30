@@ -249,7 +249,7 @@ class FingerprintProcessor:
         write_to_group(h5f, 'system',
                        {},
                        {'fingerprint_entries': entries},
-                       dict_dset_types={'fingerprint_entries': entries.dtype},
+                       dset_types={'fingerprint_entries': entries.dtype},
                        maxshape=(None,))
         self.summary()
 

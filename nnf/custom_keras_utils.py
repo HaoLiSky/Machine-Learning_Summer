@@ -38,27 +38,27 @@ class endmask(Layer):
 class LossHistory(Callback):
     def __init__(self):
         self.seen = 0
-        self.display = 5  # delay in epochs between prints
         self.test_losses = []
         self.train_losses = []
+        self.logs = {}
 
-    def on_epoch_end(self, epoch, logs={}):
+    def on_epoch_end(self, epoch, logs):
         self.train_losses.append(logs.get('loss'))
         self.test_losses.append(logs.get('val_loss'))
 
         self.seen += 1
-        if self.seen % self.display == 0:
-            try:
-                print('\r{}:'.format(self.seen).ljust(8),
-                      '{0:.3f}'.format(logs.get('loss')).rjust(9),
-                      '{0:.3f}'.format(logs.get('mean_diff')).rjust(9),
-                      '{0:.3f}'.format(logs.get('spread')).rjust(9),
-                      '   |',
-                      '{0:.3f}'.format(logs.get('val_loss')).rjust(9),
-                      '{0:.3f}'.format(logs.get('val_mean_diff')).rjust(9),
-                      '{0:.3f}'.format(logs.get('val_spread')).rjust(9),
+        # if self.seen % self.display == 0:
+        try:
+            print('\r{}:'.format(self.seen).ljust(8),
+                  '{0:.3f}'.format(logs.get('loss')).rjust(9),
+                  '{0:.3f}'.format(logs.get('mean_pred')).rjust(9),
+                  '{0:.3f}'.format(logs.get('spread')).rjust(9),
+                  '   |',
+                  '{0:.3f}'.format(logs.get('val_loss')).rjust(9),
+                  '{0:.3f}'.format(logs.get('val_mean_pred')).rjust(9),
+                  '{0:.3f}'.format(logs.get('val_spread')).rjust(9),
 
-                      end='')
-                sys.stdout.flush()
-            except (TypeError, ValueError):
-                pass
+                  end='')
+            sys.stdout.flush()
+        except (TypeError, ValueError):
+            pass
