@@ -7,9 +7,9 @@ import numpy as np
 import sklearn.preprocessing as skp
 from itertools import combinations_with_replacement
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
+from nnf.io_utils import SettingsParser
 from nnf.io_utils import grid_string
 from nnf.batch_fingerprint import Fingerprint
-from nnf.framework import SettingsParser
 
 np.random.seed(8)
 pair_slice_choices = [[2],
@@ -56,8 +56,6 @@ class DataPreprocessor:
             # 1) read list of names from system/sys_entries dataset
             self.m_names = list(h5f.require_group('fingerprints').keys())
             self.m_names = np.asarray(self.m_names)[slice_from_str(index)]
-            self.m_groups = [name.split('.')[0].split('_')[-2]
-                             for name in self.m_names]
             self.sys_elements = [symbol.decode('utf-8')
                                  for symbol
                                  in h5f['system'].attrs['sys_elements']]
@@ -138,7 +136,6 @@ class DataPreprocessor:
             energies = np.asarray(self.m_energies)
             element_counts = np.asarray(self.m_element_counts)
             m_names = np.string_(self.m_names.tolist())
-            print(m_names.dtype)
             write_to_group(h5f, 'preprocessed',
                            {},
                            {'energies'      : energies,
@@ -156,14 +153,58 @@ class DataPreprocessor:
                            {'sys_elements': np.string_(self.sys_elements)},
                            scaling_standards)
 
-    def generate_partitions(self, filename, split_frac, k=0):
+    def generate_simple_partitions(self, filename, split_frac, k=0):
         """
         Generate comma-separated value file with training/testing
         designations for each fingerprint.
 
         Args:
-            filename (str): Filename of .csv
-                e.g. partitions.csv
+            filename (str): Filename of .csv (e.g. partitions.csv)
+            split_frac (float): Fraction of dataset to designate for training.
+                e.g. 0.5 to set aside half for testing and half for training
+            k (int): Optional number of subsamples for stratified k-fold.
+                e.g. 10 for 10-fold cross validation
+        """
+        assert k > 1 or split_frac < 1
+        assert self.m_energies
+        m_names = self.m_names
+        np.random.shuffle(m_names)
+        bins_dict = {}
+        # 1) separate data for testing set using specified fraction
+        if split_frac < 1:
+            split_ind = [int(np.ceil(len(m_names) * split_frac))]
+            training_group, validation_group = np.split(m_names, split_ind)
+            for entry in validation_group:
+                bins_dict[entry] = -1
+        else:
+            training_group = m_names
+        # 2) generate subsamples for stratified k-fold cross validation
+        if k > 1:
+            bins = [training_group[i::k] for i in range(k)]
+            for j, bin_ in enumerate(bins):
+                for entry in bin_:
+                    bins_dict[entry] = j
+        else:
+            for entry in training_group:
+                bins_dict[entry] = 0
+        organized_entries = sorted([(m_name, str(bins_dict[m_name]))
+                                    for m_name in m_names],
+                                   key=lambda x: x[1])
+        # 3) Write to file
+        header = 'Name,Designation (-1: testing, 0+: training);\n'
+        lines = [','.join(pair) for pair in organized_entries]
+        with open(filename, 'w') as fil:
+            text = header + ';\n'.join(lines)
+            fil.write(text)
+
+    def generate_partitions(self, filename, split_frac, k=0):
+        """
+        Generate comma-separated value file with training/testing
+        designations for each fingerprint. Groups are defined by the second-
+        to-last number in
+
+        Args:
+            filename (str): Filename of .csv (e.g. partitions.csv)
             split_frac (float): Fraction of dataset to designate for training.
                 e.g. 0.5 to set aside half for testing and half for training
             k (int): Optional number of subsamples for stratified k-fold.
@@ -171,8 +212,10 @@ class DataPreprocessor:
         """
         max_iters = self.settings['max_iters']
         size_tolerance_factor = self.settings['size_tolerance_factor']
-        assert self.m_groups  # ensure read_fingerprints() completed]
+        assert self.m_energies  # ensure read_fingerprints() completed
         assert k > 1 or split_frac < 1
+        self.m_groups = [name.split('.')[0].split('_')[-2]
+                         for name in self.m_names]
         comps = {group: str(comp) for group, comp
                  in zip(self.m_groups, self.m_element_counts)}
         energy_dict = {group: energy for group, energy
@@ -184,22 +227,23 @@ class DataPreprocessor:
         if split_frac < 1:
             iteration = 0
             total_entries = len(self.m_names)
-            testing_groups = []
-            testing_total = 0
+            validation_groups = []
+            validation_total = 0
             while iteration < max_iters:
                 iteration += 1
                 # randomly choose a data group
                 choice = np.random.choice(groups_set)
-                new_frac = (testing_total + size_dict[choice]) / total_entries
+                new_frac = ((validation_total + size_dict[choice])
+                            / total_entries)
                 # designate to testing set if it fits
                 if new_frac <= 1 - split_frac:
-                    testing_total += size_dict[choice]
+                    validation_total += size_dict[choice]
                     ind = groups_set.index(choice)
-                    testing_groups.append(groups_set.pop(ind))
+                    validation_groups.append(groups_set.pop(ind))
                     if new_frac == split_frac:
                         break
                         # if testing set size matches desired size, stop early
-            for entry in testing_groups:
+            for entry in validation_groups:
                 bins_dict[entry] = -1
         # 2) generate subsamples for stratified k-fold cross validation
         if k > 1:
@@ -281,7 +325,8 @@ def read_partitions(filename):
     return partition_dict
 
 
-def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
+def load_preprocessed(filename, partitions_file, k_test=0,
+                      validation_tag=-1, libver='latest'):
     """
     Args:
         filename (str): File with preprocessed fingerprint data.
@@ -290,6 +335,9 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
             e.g. partitions.csv
         k_test (int): Optional index of subsample for testing with
             stratified k-fold cross validation.
+        validation_tag: Optional designation tag for validation data (i.e.
+            not introduced to the network as either training or testing).
+                Defaults to -1.
         libver (str): Optional h5py argument for i/o. Defaults to 'latest'.
 
     Returns:
@@ -313,7 +361,6 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
     assert not np.any(np.isnan(all_data))
     assert not np.any(np.isinf(all_data))
 
-    validation_tag = -1
     training_set = []
     testing_set = []
     validation_set = []
@@ -333,9 +380,9 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
     testing['inputs'] = np.take(all_data, testing_set, axis=0)
     train_samples, in_neurons, feature_length = training['inputs'].shape
     test_samples = len(testing['inputs'])
-    print('Training samples:', train_samples.ljust(15),
+    print('\nTraining samples:', str(train_samples).ljust(15),
           'Testing samples:', test_samples)
-    print('Input neurons (max atoms):', in_neurons.ljust(15),
+    print('Input neurons (max atoms):', str(in_neurons).ljust(15),
           'Feature-vector length:', feature_length)
     training['inputs'] = training['inputs'].transpose([1, 0, 2])
     testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
@@ -348,11 +395,11 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
     training['compositions'] = np.take(comp_strings, training_set, axis=0)
     testing['compositions'] = np.take(comp_strings, testing_set, axis=0)
 
-    train_c = training['compositions']
-    test_c = testing['compositions']
-    common = grid_string(sorted(set(train_c).intersection(test_c)))
-    train_u = grid_string(sorted(set(train_c).difference(test_c)))
-    test_u = grid_string(sorted(set(test_c).difference(train_c)))
+    train_c = set(training['compositions'])
+    test_c = set(testing['compositions'])
+    common = grid_string(sorted(train_c.intersection(test_c)))
+    train_u = grid_string(sorted(train_c.difference(test_c)))
+    test_u = grid_string(sorted(test_c.difference(train_c)))
     print('Unique compositions in training set:')
     print(train_u)
     print('Unique compositions in testing set:')
@@ -510,12 +557,10 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser(description=description)
     argparser.add_argument('--settings_file', '-s', default='settings.cfg',
                            help='Filename of settings.')
-    argparser.add_argument('--verbosity', '-v', action='count')
+    argparser.add_argument('--verbosity', '-v', default=0,
+                           action='count')
     argparser.add_argument('--export', '-E', action='store_true',
                            help='Export entries to csv.')
-    argparser.add_argument('-k', type=int, default=0,
-                           help='Number of subsamples for stratified \
-                                 k-fold cross validation.')
     args = argparser.parse_args()
     settings = SettingsParser('Preprocess').read(args.settings_file)
     settings['verbosity'] = args.verbosity
