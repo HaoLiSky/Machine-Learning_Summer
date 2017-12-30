@@ -1,9 +1,50 @@
 """
 
 """
-import h5py
+import string
 import numpy as np
 
+ALPHABET = (string.ascii_uppercase + string.ascii_lowercase
+            + string.digits)
+ALPHABET_REVERSE = dict((c, i) for (i, c) in enumerate(ALPHABET))
+BASE = len(ALPHABET)
+SIGN_CHARACTER = '$'
+
+
+def num_encode(n):
+    if n < 0:
+        return SIGN_CHARACTER + num_encode(-n)
+    s = []
+    while True:
+        n, r = divmod(n, BASE)
+        s.append(ALPHABET[r])
+        if n == 0: break
+    return ''.join(reversed(s))
+
+
+def num_decode(s):
+    if s[0] == SIGN_CHARACTER:
+        return -num_decode(s[1:])
+    n = 0
+    for c in s:
+        n = n * BASE + ALPHABET_REVERSE[c]
+    return n
+
+
+def generate_tag(unique_dict, add_on='0'):
+    j_ints = ''.join([str(val) for val
+                      in unique_dict.values()
+                      if isinstance(val, int)])
+    floats = [np.log(val) * 10
+              for val in unique_dict.values()
+              if isinstance(val, float)]
+
+    float_strings = ['0{0:.0f}'.format(val) if val == abs(val)
+                     else '{0:.0f}'.format(abs(val))
+                     for val in floats]
+
+    j_floats = ''.join(float_strings)
+    tag = num_encode(int(j_ints + j_floats + add_on))
 
 def slice_from_str(string):
     """

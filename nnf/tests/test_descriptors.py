@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 from scipy.misc import comb
 from ase.build import bulk
-from fingerprints import represent_BP, build_supercell
+from nnf.fingerprints import represent_BP, build_supercell
 
 
 class Test_Gs(unittest.TestCase):
