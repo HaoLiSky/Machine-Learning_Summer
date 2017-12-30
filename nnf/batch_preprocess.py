@@ -1,11 +1,14 @@
 """
-
+Preprocessing fingerprints for network input.
 """
-import os
+import argparse
 import h5py
 import numpy as np
 import sklearn.preprocessing as skp
 from itertools import combinations_with_replacement
+from nnf.io_utils import slice_from_str, read_from_group, write_to_group
+from nnf.batch_fingerprint import Fingerprint
+from nnf.framework import SettingsParser
 
 np.random.seed(8)
 pair_slice_choices = [[2],
@@ -21,246 +24,408 @@ triplet_slice_choices = [[8],
                          slice(None, None, None)]
 
 
-class Preprocesser():
-    def __init__(self, settings):
-        self.g_1 = []
-        self.g_2 = []
-        self.s_groups = []
-        self.sys_elements = []
-        self.s_energies = []
-        self.s_element_counts = []
-        self.index = settings['index']
-        self.max_iters = settings['subsample_redistribute_iterations']
-        self.size_tolerance = settings['subsample_size_tolerance']
-        self.all = []
-        self.bins = []
-        self.subsamples = []
-        self.k = settings['k-fold']
-        self.slice_indices = settings['slice_indices']
-
+class DataPreprocessor:
+    """
+    Preprocess fingerprint data for neural network training.
+    """
+    def __init__(self, settings, **kwargs):
+        self.settings = settings
+        self.settings.update(kwargs)
 
     def read_fingerprints(self, filename):
-        self.g_1 = []
-        self.g_2 = []
-        self.s_groups = []
+        """
+        Load fingerprint data and system details.
+
+        Args:
+            filename: Fingerprints file (e.g. fingerprints.h5).
+        """
+        self.g = []
+        self.dg = []
+        self.m_names = []
+        self.m_groups = []
         self.sys_elements = []
-        self.s_energies = []
-        self.s_element_counts = []
-        with h5py.File(filename, 'r', libver='latest') as h5f:
-            # read list of names from system/sys_entries dataset
-            sys_entries = h5f['system']['sys_entries'][()]
-            sys_entries = sys_entries[self.index]  # slice using index
-            s_names = [line.split(b';')[0].decode('utf-8')
-                       for line in sys_entries]
-            self.s_groups = [name.split('_')[1] for name in s_names]
+        self.m_energies = []
+        self.m_element_counts = []
+        self.standards = []
+
+        libver = self.settings['libver']
+        index = self.settings['index']
+        with h5py.File(filename, 'r', libver=libver) as h5f:
+            # 1) read list of names from system/sys_entries dataset
+            self.m_names = list(h5f.require_group('fingerprints').keys())
+            self.m_names = np.asarray(self.m_names)[slice_from_str(index)]
+            self.m_groups = [name.split('.')[0].split('_')[-2]
+                             for name in self.m_names]
             self.sys_elements = [symbol.decode('utf-8')
                                  for symbol
                                  in h5f['system'].attrs['sys_elements']]
-            # get master set of elements from system attributes
-            s_dset = h5f['structures']  # top-level group reference
-            for j, s_name in enumerate(s_names):
-                # loop over structures
-                dset = s_dset[s_name]  # group reference for one structure
-                n_atoms = dset.attrs['natoms']
-                element_set = [symbol.decode('utf-8')
-                               for symbol in dset.attrs['element_set']]
-                # set of elements per structure
-                if not set(element_set).issubset(set(self.sys_elements)):
-                    continue  # skip if not part of master set
-
-                count_per_element = dset.attrs['element_counts']
-                energy_value = float(dset.attrs['energy']) / n_atoms * 1000
-                self.g_1.append(dset['G_1'][()])
-                self.g_2.append(dset['G_2'][()])
-                self.s_energies.append(energy_value)
-                self.s_element_counts.append(count_per_element.tolist())
-            print('Read {} fingerprints from {}'.format(len(self.s_energies),
+            # 2) Loop through fingerprints, loading data to object
+            for j, m_name in enumerate(self.m_names):
+                print('read', j, end='\r')
+                path = 'fingerprints/' + m_name
+                fp = Fingerprint()
+                fp.from_file(h5f, path, self.sys_elements)
+                self.g.append([fp.dsets_dict[key]
+                               for key in fp.dsets_dict.keys()
+                               if key.find('G_') == 0])
+                self.dg.append([fp.dsets_dict[key]
+                                for key in fp.dsets_dict.keys()
+                                if key.find('dG_') == 0])
+                energy = float(fp.energy_val) * 1000 / fp.natoms
+                # energy per atom
+                self.m_energies.append(energy)
+                self.m_element_counts.append(fp.element_counts)
+                if not set(fp.elements_set).issubset(set(self.sys_elements)):
+                    continue  # skip if not part of system
+            self.g = [list(g) for g in zip(*self.g)]
+            self.dg = [list(dg) for dg in zip(*self.dg)]
+            print('Read {} fingerprints from {}'.format(len(self.m_energies),
                                                         filename))
-            
-    def subdivide_by_parameter_set(self, n_pair_params, n_triplet_params):
-        assert self.g_1  # ensure read_fingerprints() completed
+
+    def subdivide_by_parameter_set(self, divisions_by_fingerprint):
+        """
+        Slice fingerprints by final dimension (parameter sets).
+
+        Args:
+            divisions_by_fingerprint: List of desired parameter set lengths
+                per fingerprint (e.g. [8,16] for 8 pair parameter sets and
+                16 triplet parameter sets.)
+        """
+        assert self.g  # ensure read_fingerprints() completed
+
+        # temp; hardcoded for g1 and g2
+        n_pair_params, n_triplet_params = divisions_by_fingerprint
         pair_slice = pair_slice_choices[int(np.log2(n_pair_params))]
         triplet_slice = triplet_slice_choices[int(np.log2(n_triplet_params))]
-        self.g_1 = [g[..., pair_slice] for g in self.g_1]
-        self.g_2 = [g[..., triplet_slice] for g in self.g_2]
+        index_list = [pair_slice, triplet_slice]
+        # temp; hardcoded for g1 and g2
 
-    def preprocess_fingerprints(self, n_pair_params, n_triplet_params):
-        assert self.g_1  # ensure read_fingerprints() completed
-        fps = [self.g_1, self.g_2]
-        # get maximum occurrences per atom type
-        max_per_element = np.amax(self.s_element_counts,
-                                  axis=0)
-        # get interactions per fingerprint
+        for j, indexing in enumerate(index_list):
+            self.g[j] = [g[..., indexing] for g in self.g[j]]
+
+    def preprocess_fingerprints(self):
+        """
+        Preprocess fingerprints.
+        """
+        assert self.g  # ensure read_fingerprints() completed
+        self.pad_val = self.settings['padding_value']
+        # 1) get maximum occurrences per atom type
+        max_per_element = np.amax(self.m_element_counts, axis=0)
+        # 2) get interactions per fingerprint
         pair_i = list(combinations_with_replacement(self.sys_elements, 1))
         triplet_i = list(combinations_with_replacement(self.sys_elements, 2))
-        a = [len(pair_i), len(triplet_i)]
-        # get parameters sets per fingerprint
-        b = [n_pair_params, n_triplet_params]
-        # rearrange data to columns by parameter set and normalize
-        normalized = normalize_to_vectors(fps, a, b)
-
-        # pad fingerprints by element
+        alpha = [len(pair_i), len(triplet_i)]
+        # 3) normalize
+        normalized, self.standards = normalize_to_vectors(self.g, alpha)
+        # 4) pad fingerprints by element
         self.all = pad_fp_by_element(normalized,
-                                     self.s_element_counts,
-                                     max_per_element)
+                                     self.m_element_counts,
+                                     max_per_element,
+                                     pad_val=self.pad_val)
 
-    def save_preprocessed(self, filename):
-        assert self.all  # ensure preprocess_fingerprints() completed
-        with h5py.File(filename, 'w', libver='latest') as h5f:
-            sys = h5f.require_group('system')
-            sys.attrs['s_energies'] = self.s_energies
-            sys.attrs['s_element_counts'] = self.s_element_counts
-            sys.attrs['sys_elements'] = np.string_(self.sys_elements)
-            h5f.create_dataset('preprocessed/all',
-                               data=self.all, shape=self.all.shape)
+    def to_file(self, filename):
+        """
+        Write preprocessed fingerprints to file.
 
-    def save_stratified_kfold(self, filename):
-        assert self.subsamples  # ensure preprocess_fingerprints() completed
-        with h5py.File(filename, 'w', libver='latest') as h5f:
-            for j, subsample in enumerate(self.subsamples):
-                path = 'preprocessed/{}fold/subsample_{}'.format(self.k, j)
-                h5f.create_dataset(path,
-                                   data=subsample, shape=subsample.shape)
+        Args:
+            filename (str): Output file (e.g. preprocessed.h5).
+        """
+        assert self.standards  # ensure preprocess_fingerprints() completed
+        libver = self.settings['libver']
+        with h5py.File(filename, 'w', libver=libver) as h5f:
+            energies = np.asarray(self.m_energies)
+            element_counts = np.asarray(self.m_element_counts)
+            m_names = np.string_(self.m_names)
+            write_to_group(h5f, 'preprocessed',
+                           {},
+                           {'energies'      : energies,
+                            'element_counts': element_counts,
+                            'all'           : self.all})
 
-    def save_split(self, filename):
-        assert self.all  # ensure preprocess_fingerprints() completed
-        with h5py.File(filename, 'w', libver='latest') as h5f:
-            h5f.create_dataset('preprocessed/',
-                               data=self.all, shape=self.all.shape)
+            scaling_standards = {'standard_{}'.format(j): standard
+                                 for j, standard in enumerate(self.standards)}
+            write_to_group(h5f, 'system',
+                           {'sys_elements': np.string_(self.sys_elements),
+                            'm_names': m_names},
+                           scaling_standards)
 
-    def stratified_kfold_bins(self):
-        '''
-        with h5py.File(filename, 'r',
-                       libver='latest') as h5f:
-    
-            sys_entries = h5f['system']['sys_entries'][()]
-            s_names = [line.split(b';')[0].decode('utf-8')
-                       for line in sys_entries]
-            s_groups = [name.split('_')[1] for name in s_names]
-            s_element_counts = [line.split(b';')[3].decode('utf-8').split(',')
-                       for line in sys_entries]
-            s_energies = [float(line.split(b';')[-1])
-                          for line in sys_entries]
-        '''
-        assert self.s_groups  # ensure read_fingerprints() completed
-        comps = {group: comp
-                 for group, comp in zip(self.s_groups, 
-                                        self.s_element_counts)}
-    
-        energy_dict = {group: energy
-                       for group, energy in zip(self.s_groups, 
-                                                self.s_energies)}
-    
-        groups_set = sorted(list(set(self.s_groups)), key=comps.get)
-    
-        bins = [groups_set[i::self.k] for i in range(self.k)]
-    
-        print([len(x) for x in bins])
-    
-        name_counts = [self.s_groups.count(x) for x in groups_set]
-    
-        bins_tot = [np.sum([name_counts[groups_set.index(entry)]
-                            for entry in bi]) for bi in bins]
-        print(bins_tot)
-    
-        iteration = 0
-        size_tolerance = np.mean(bins_tot) / self.size_tolerance
-        energy_best = np.inf
-        bins_best = list(bins)
-    
-        while iteration < self.max_iters:
-            iteration += 1
-            smallest = np.argmin(bins_tot)
-            largest = np.argmax(bins_tot)
-            rand_ind = int(
-                    np.round(np.abs(np.random.rand()
-                                    * (len(bins[largest]) / 2))))
-            bins[smallest].append(bins[largest].pop(rand_ind))
-            bins_tot = [np.sum([name_counts[groups_set.index(entry)]
-                                for entry in bi]) for bi in bins]
-            mean_energies = [mean_energy(energy_dict,
-                                         name_counts,
-                                         groups_set,
-                                         entries) for entries in bins]
-            if (np.std(bins_tot) < size_tolerance
-                    and np.std(mean_energies) < energy_best):
-                energy_best = np.std(mean_energies)
-                bins_best = bins
-        self.bins = bins_best
+    def generate_partitions(self, filename, split_frac, k=0):
+        """
+        Generate comma-separated value file with training/testing
+        designations for each fingerprint.
+
+        Args:
+            filename (str): Filename of .csv
+                e.g. partitions.csv
+            split_frac (float): Fraction of dataset to designate for training.
+                e.g. 0.5 to set aside half for testing and half for training
+            k (int): Optional number of subsamples for stratified k-fold.
+                e.g. 10 for 10-fold cross validation
+        """
+        max_iters = self.settings['max_iters']
+        size_tolerance_factor = self.settings['size_tolerance_factor']
+        assert self.m_groups  # ensure read_fingerprints() completed]
+        assert k > 1 or split_frac < 1
+        comps = {group: str(comp) for group, comp
+                 in zip(self.m_groups, self.m_element_counts)}
+        energy_dict = {group: energy for group, energy
+                       in zip(self.m_groups, self.m_energies)}
+        groups_set = list(set(self.m_groups))
+        size_dict = {group: self.m_groups.count(group) for group in groups_set}
+        groups_set.sort(key=size_dict.get)
+        bins_dict = {}
+        # 1) separate data for testing set using specified fraction
+        if split_frac < 1:
+            iteration = 0
+            total_entries = len(self.m_names)
+            testing_groups = []
+            testing_total = 0
+            while iteration < max_iters:
+                iteration += 1
+                # randomly choose a data group
+                choice = np.random.choice(groups_set)
+                new_frac = (testing_total + size_dict[choice]) / total_entries
+                # designate to testing set if it fits
+                if new_frac <= 1 - split_frac:
+                    testing_total += size_dict[choice]
+                    ind = groups_set.index(choice)
+                    testing_groups.append(groups_set.pop(ind))
+                    if new_frac == split_frac:
+                        break
+                        # if testing set size matches desired size, stop early
+            for entry in testing_groups:
+                bins_dict[entry] = -1
+        # 2) generate subsamples for stratified k-fold cross validation
+        if k > 1:
+            bins = [groups_set[i::k] for i in range(k)]
+            bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
+                         for bin_ in bins]
+            print(bin_sizes)
+
+            iteration = 0
+            size_tolerance = np.mean(bin_sizes) / size_tolerance_factor
+            energy_best = np.inf
+            bins_best = list(bins)
+            while iteration < max_iters:
+                iteration += 1
+                bins = [sorted(bin_, key=size_dict.get) for bin_ in bins]
+                # bins internally sorted from smallest groups to largest groups
+                smallest = int(np.argmin(bin_sizes))
+                largest = int(np.argmax(bin_sizes))
+                rand_ind = int(np.round(np.abs(np.random.rand()
+                                               * (len(bins[largest]) / 2))))
+                # randomly choose group from first half of largest bin
+                bins[smallest].append(bins[largest].pop(rand_ind))
+                bin_sizes = [np.sum([size_dict[entry]
+                                     for entry in bin_]) for bin_ in bins]
+                mean_energies = [mean_energy(bin_,
+                                             energy_dict,
+                                             size_dict) for bin_ in bins]
+                if (np.std(bin_sizes) < size_tolerance
+                        and np.std(mean_energies) < energy_best):
+                    energy_best = np.std(mean_energies)
+                    bins_best = bins
+            bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
+                         for bin_ in bins_best]
+            print(bin_sizes)
+            for j, bin_ in enumerate(bins_best):
+                for entry in bin_:
+                    bins_dict[entry] = j
+        else:  # i.e. only split into training and testing groups
+            for entry in groups_set:
+                bins_dict[entry] = 0
+        # 3) Assign designation tags to each molecule's fingerprint
+        organized_entries = []
+        for m_name in self.m_names:
+            group = m_name.split('.')[0].split('_')[-2]
+            bin_designation = bins_dict[group]
+            organized_entries.append([m_name, str(bin_designation)])
+        organized_entries = sorted(organized_entries, key=lambda x: x[1])
+        # 4) Write to file
+        header = 'Name,Designation (-1: testing, 0+: training);\n'
+        lines = [','.join(pair) for pair in organized_entries]
+        with open(filename, 'w') as fil:
+            text = header + ';\n'.join(lines)
+            fil.write(text)
 
 
-def mean_energy(energy_dict, name_counts, groups_set, entries):
+def mean_energy(bin_, energy_dict, size_dict):
     """
     Weighted average of energy. Intermediate function for
     sorting stratified kfold chunks.
     """
     products = [np.multiply(energy_dict[entry],
-                            name_counts[groups_set.index(entry)])
-                for entry in entries]
-    divisor = np.sum([name_counts[groups_set.index(entry)]
-                      for entry in entries])
+                            size_dict[entry]) for entry in bin_]
+    divisor = np.sum([size_dict[entry] for entry in bin_])
     return np.sum(products) / divisor
 
 
-def normalize_to_vectors(unprocessed_data, Alpha, Beta):
+def read_partitions(filename):
     """
+    Args:
+        filename: File with training/testing partitions (e.g. partitions.csv)
 
+    Returns:
+        Dictionary of molecule ids and their partition designations.
+    """
+    with open(filename, 'r') as fil:
+        lines = fil.readlines()[1:]  # skip header
+    entries = [line.replace(';\n', '').split(',') for line in lines]
+    partition_dict = {m_name: bin_ for m_name, bin_ in entries}
+    return partition_dict
+
+
+def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
+    """
+    Args:
+        filename (str): File with preprocessed fingerprint data.
+            e.g. fingerprints.h5
+        partitions_file (str): File with training/testing partitions.
+            e.g. partitions.csv
+        k_test (int): Optional index of subsample for testing with
+            stratified k-fold cross validation.
+        libver (str): Optional h5py argument for i/o. Defaults to 'latest'.
+
+    Returns:
+        system (dict): System details.
+        training (dict): Data partitioned for training.
+        testing (dict): Data partitioned for testing.
+    """
+    # 1) Read data from hdf5 file
+    with h5py.File(filename, 'r', libver=libver) as h5f:
+        attrs_dict, dsets_dict = read_from_group(h5f, 'preprocessed')
+        sys_elements = attrs_dict['sys_elements']
+        energies = dsets_dict['energies']
+        compositions = dsets_dict['element_counts']
+        all_data = dsets_dict['all']
+        m_names = dsets_dict['m_names']
+    partitions = read_partitions(partitions_file)
+    sizes = np.sum(compositions, axis=1)
+    max_per_element = np.amax(compositions, axis=0)
+    # maximum occurrences per atom type
+    assert not np.any(np.isnan(all_data))
+    assert not np.any(np.isinf(all_data))
+
+    validation_tag = -1
+    training_set = []
+    testing_set = []
+    validation_set = []
+    # 2) Get designation tags for each molecule's fingerprint
+    for j, m_name in enumerate(m_names):
+        if partitions[m_name] == k_test:
+            testing_set.append(j)
+        elif partitions[m_name] == validation_tag:
+            validation_set.append(j)
+        else:
+            training_set.append(j)
+
+    # 3) Distribute entries to training or testing sets accordingly
+    training = {}
+    testing = {}
+    training['inputs'] = np.take(all_data, training_set, axis=0)
+    testing['inputs'] = np.take(all_data, testing_set, axis=0)
+    print(training['inputs'].shape, testing['inputs'].shape)
+    training['inputs'] = training['inputs'].transpose([1, 0, 2])
+    testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
+
+    training['outputs'] = np.take(energies, training_set)
+    testing['outputs'] = np.take(energies, testing_set)
+    print(len(training['outputs']), len(testing['outputs']))
+
+    training['compositions'] = np.take(compositions, training_set)
+    testing['compositions'] = np.take(compositions, testing_set)
+    print(set(training['compositions']))
+    print(set(testing['compositions']))
+
+    training['sizes'] = np.take(sizes, training_set)
+    testing['sizes'] = np.take(sizes, testing_set)
+
+    system = {'sys_elements'   : sys_elements,
+              'max_per_element': max_per_element}
+    return system, training, testing
+
+
+def normalize_to_vectors(unprocessed_data, Alpha):
+    """
     Args:
         unprocessed_data: List of data sets (e.g. G1, G2)
             with equal-size first dimension.
         Alpha: interactions w.c. per data set
-        Beta: parameter sets per data set
+            e.g. [2, 3] for a binary system
 
     Returns:
         processed_data: Flattened, normalized dataset.
-            Length = per structure,
-            width = feature vector (i.e. flattened and concatenated G1 and G2).
-
+        Length = per structure,
+        width = feature vector (i.e. flattened and concatenated G1 and G2).
     """
-
     vectorized_fp_list = []
-    for dataset, alpha, beta in zip(unprocessed_data, Alpha, Beta):
+    standards = []
+    for dataset, alpha in zip(unprocessed_data, Alpha):
+        # 1) Rearrange to columns sharing last dimension
         fp_columns = [rearrange_to_columns(fp_per_s)
                       for fp_per_s in dataset]
         fp_lengths = [len(fingerprint) for fingerprint in
                       fp_columns]
+        # 2) Join into grid
         fp_as_grid = np.concatenate(fp_columns)
-
+        # 3) Normalize along column-axis using scikit-learn
+        st_min = np.max(fp_as_grid, axis=0)
+        st_max = np.min(fp_as_grid, axis=0)
+        st_mean = np.mean(fp_as_grid, axis=0)
+        standards.append(np.stack([st_min, st_max, st_mean], axis=0))
         normalized_grid = skp.normalize(fp_as_grid, axis=0, norm='max')
 
-        print('alpha={}, beta={}'.format(alpha, beta),
+        print('alpha={}'.format(alpha),
               '  min=', np.amin(normalized_grid),
               '  mean=', np.mean(normalized_grid),
               '  std=', np.std(normalized_grid),
               '  max=', np.amax(normalized_grid))
-
+        # 4) Regenerate fingerprints per molecule
         regenerated_fps = regenerate_fp_by_len(normalized_grid, fp_lengths)
+        # 5) Flatten fingerprints to vectors
         vectorized_fp_list.append(vectorize_fps(regenerated_fps, alpha))
-    normalized_fps = [np.concatenate((g1t, g2t), axis=1) for g1t, g2t
+    # 6) Concatenate all fingerprints for each molecule
+    normalized_fps = [np.concatenate(fps, axis=1) for fps
                       in zip(*vectorized_fp_list)]
-
-    return normalized_fps
-    # for each fingerprint,
-    # length = # structures * # combinations w.r. of interactions
-    # shape = ((S * j), k)
-
-    # regenerate data per structure by slicing based on recorded atoms
-    # per structure and then flatten for one 1d vector per structure
+    return normalized_fps, standards
 
 
 def rearrange_to_columns(fingerprint):
+    """
+    Args:
+        fingerprint: Multidimensional numpy array.
+
+    Returns:
+        Concatenated fingerprint.
+    """
     layers = [layer for layer in np.asarray(fingerprint)]
     columns = np.concatenate(layers, axis=0)
     return columns
 
 
 def regenerate_fp_by_len(fp_as_grid, fp_lengths):
+    """
+    Args:
+        fp_as_grid: Fingerprint data as indistinct grid.
+        fp_lengths: List of lengths of fingerprint vectors.
+
+    Returns:
+        Regenerated fingerprints as list of numpy arrays.
+    """
     indices = np.cumsum(fp_lengths)[:-1]
     regenerated_fps = np.split(fp_as_grid, indices)
     return regenerated_fps
 
 
 def vectorize_fps(regenerated_fps, alpha):
+    """
+    Args:
+        regenerated_fps: list of fingerprints as numpy arrays.
+        alpha: length of last dimension in fingerprint arrays.
+
+    Returns:
+        List of flattened fingerprint vectors.
+    """
     lengths = [len(fingerprint) for fingerprint in regenerated_fps]
     vectors = [[atom.flatten(order='F')
                 for atom in np.split(grid,
@@ -270,9 +435,8 @@ def vectorize_fps(regenerated_fps, alpha):
     return vectors
 
 
-def pad_fp_by_element(input_data, compositions, final_layers):
+def pad_fp_by_element(input_data, compositions, final_layers, pad_val=0.0):
     """
-
     Slice fingerprint arrays by elemental composition and
     arrange slices onto empty* arrays to produce sets of padded fingerprints
     (i.e. equal length for each type of fingerprint)
@@ -287,13 +451,12 @@ def pad_fp_by_element(input_data, compositions, final_layers):
             in # of atoms.
     Returns:
         output_data: 2D array of structures/features, padded to equal lengths
-            in the 2nd dimension (equal number of atoms per structure).
-
+            in the 2nd dimension (equal number of atoms per molecule).
     """
     new_input_data = []
-    for structure, initial_layers in zip(input_data, compositions):
+    for molecule, initial_layers in zip(input_data, compositions):
         assert len(final_layers) == len(initial_layers)
-        data = np.asarray(structure)
+        data = np.asarray(molecule)
         data_shape = data.shape
         natoms_i = data_shape[0]
         natoms_f = sum(final_layers)
@@ -302,7 +465,7 @@ def pad_fp_by_element(input_data, compositions, final_layers):
         pad_widths = [(natoms_diff, 0)] + [(0, 0)] * secondary_dims
         # tuple of (header_pad, footer_pad) per dimension
         # if masking:
-        data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * 0.0
+        data_f = np.pad(np.ones(data.shape), pad_widths, 'edge') * pad_val
         # else:
         # data_f = np.pad(np.zeros(data.shape), pad_widths, 'edge')
         slice_pos = np.cumsum(initial_layers)[:-1]
@@ -319,46 +482,33 @@ def pad_fp_by_element(input_data, compositions, final_layers):
     return np.asarray(new_input_data)
 
 
-def read_preprocessed(filename, k_test_ind, split_positions,
-                      n_pair_params, n_trip_params):
-    with h5py.File(filename, 'r', libver='latest') as h5f:
-        sys = h5f['system']
-        energy_list = sys.attrs['s_energies']
-        element_counts_list = sys.attrs['s_element_counts']
-        sys_elements = [x.decode() for x in sys.attrs['sys_elements']]
-        padded = h5f['{}-{}'.format(n_pair_params, n_trip_params)][()]
+if __name__ == '__main__':
+    description = 'Create preprocessed data file.'
+    argparser = argparse.ArgumentParser(description=description)
+    argparser.add_argument('--settings_file', '-s', default='settings.cfg',
+                           help='Filename of settings.')
+    argparser.add_argument('--verbosity', '-v', action='count')
+    argparser.add_argument('--export', '-E', action='store_true',
+                           help='Export entries to csv.')
+    argparser.add_argument('-k', type=int, default=0,
+                           help='Number of subsamples for stratified \
+                                 k-fold cross validation.')
+    args = argparser.parse_args()
+    settings = SettingsParser('Preprocess').read(args.settings_file)
+    settings['verbosity'] = args.verbosity
 
-    n_list = np.sum(element_counts_list, axis=1)
+    input_name = settings['inputs_name']
+    output_name = settings['outputs_name']
+    sys_elements = settings['sys_elements']
+    partitions_file = settings['partitions_file']
+    split_fraction = settings['split_fraction']
+    kfold = settings['kfold']
+    assert sys_elements != ['None']
 
-    max_per_element = np.amax(element_counts_list,
-                              axis=0)  # maximum occurrences per atom type
-
-    assert not np.any(np.isnan(padded))
-    assert not np.any(np.isinf(padded))
-
-    chunks = np.split(padded, split_positions)
-    valid_inputs = chunks.pop(k_test_ind).transpose([1, 0, 2])
-    train_inputs = np.concatenate(chunks).transpose([1, 0, 2])
-    print(train_inputs.shape[1], valid_inputs.shape[1])
-
-    chunked_names = np.split(n_list, split_positions)
-    n_list_valid = chunked_names.pop(k_test_ind)
-    n_list_train = np.concatenate(chunked_names)
-
-    print(len(n_list_train), len(n_list_valid))
-
-    chunked_energy = np.split(energy_list, split_positions)
-    valid_outputs = chunked_energy.pop(k_test_ind)
-    train_outputs = np.concatenate(chunked_energy)
-
-    print(len(train_outputs), len(valid_outputs))
-
-    chunked_compositions = np.split(element_counts_list, split_positions)
-    valid_compositions = chunked_compositions.pop(k_test_ind)
-    valid_compositions = [','.join([str(x) for x in y])
-                          for y in valid_compositions]
-    print(set(valid_compositions))
-
-    return (train_inputs, valid_inputs,
-            train_outputs, valid_outputs,
-            sys_elements, max_per_element, n_list_train, n_list_valid)
+    preprocessor = DataPreprocessor(settings)
+    preprocessor.read_fingerprints(input_name)
+    subdivisions = [int(val) for val in settings['subdivisions']]
+    preprocessor.subdivide_by_parameter_set(subdivisions)
+    preprocessor.preprocess_fingerprints()
+    preprocessor.to_file(output_name)
+    preprocessor.generate_partitions(partitions_file, split_fraction, k=kfold)
