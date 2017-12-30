@@ -7,6 +7,7 @@ import numpy as np
 import sklearn.preprocessing as skp
 from itertools import combinations_with_replacement
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
+from nnf.io_utils import grid_string
 from nnf.batch_fingerprint import Fingerprint
 from nnf.framework import SettingsParser
 
@@ -28,6 +29,7 @@ class DataPreprocessor:
     """
     Preprocess fingerprint data for neural network training.
     """
+
     def __init__(self, settings, **kwargs):
         self.settings = settings
         self.settings.update(kwargs)
@@ -135,18 +137,23 @@ class DataPreprocessor:
         with h5py.File(filename, 'w', libver=libver) as h5f:
             energies = np.asarray(self.m_energies)
             element_counts = np.asarray(self.m_element_counts)
-            m_names = np.string_(self.m_names)
+            m_names = np.string_(self.m_names.tolist())
+            print(m_names.dtype)
             write_to_group(h5f, 'preprocessed',
                            {},
                            {'energies'      : energies,
                             'element_counts': element_counts,
-                            'all'           : self.all})
+                            'all'           : self.all,
+                            'm_names'       : m_names},
+                           dset_types={'energies'      : energies.dtype,
+                                       'element_counts': element_counts.dtype,
+                                       'all'           : self.all.dtype,
+                                       'm_names'       : m_names.dtype})
 
             scaling_standards = {'standard_{}'.format(j): standard
                                  for j, standard in enumerate(self.standards)}
             write_to_group(h5f, 'system',
-                           {'sys_elements': np.string_(self.sys_elements),
-                            'm_names': m_names},
+                           {'sys_elements': np.string_(self.sys_elements)},
                            scaling_standards)
 
     def generate_partitions(self, filename, split_frac, k=0):
@@ -170,9 +177,8 @@ class DataPreprocessor:
                  in zip(self.m_groups, self.m_element_counts)}
         energy_dict = {group: energy for group, energy
                        in zip(self.m_groups, self.m_energies)}
-        groups_set = list(set(self.m_groups))
+        groups_set = sorted(list(set(self.m_groups)), key=comps.get)
         size_dict = {group: self.m_groups.count(group) for group in groups_set}
-        groups_set.sort(key=size_dict.get)
         bins_dict = {}
         # 1) separate data for testing set using specified fraction
         if split_frac < 1:
@@ -271,7 +277,7 @@ def read_partitions(filename):
     with open(filename, 'r') as fil:
         lines = fil.readlines()[1:]  # skip header
     entries = [line.replace(';\n', '').split(',') for line in lines]
-    partition_dict = {m_name: bin_ for m_name, bin_ in entries}
+    partition_dict = {m_name: int(bin_) for m_name, bin_ in entries}
     return partition_dict
 
 
@@ -294,11 +300,12 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
     # 1) Read data from hdf5 file
     with h5py.File(filename, 'r', libver=libver) as h5f:
         attrs_dict, dsets_dict = read_from_group(h5f, 'preprocessed')
-        sys_elements = attrs_dict['sys_elements']
+        sys_elements = h5f['system'].attrs['sys_elements']
+        m_names = [entry.decode('utf-8')
+                   for entry in dsets_dict['m_names']]
         energies = dsets_dict['energies']
         compositions = dsets_dict['element_counts']
         all_data = dsets_dict['all']
-        m_names = dsets_dict['m_names']
     partitions = read_partitions(partitions_file)
     sizes = np.sum(compositions, axis=1)
     max_per_element = np.amax(compositions, axis=0)
@@ -324,18 +331,34 @@ def load_preprocessed(filename, partitions_file, k_test=0, libver='latest'):
     testing = {}
     training['inputs'] = np.take(all_data, training_set, axis=0)
     testing['inputs'] = np.take(all_data, testing_set, axis=0)
-    print(training['inputs'].shape, testing['inputs'].shape)
+    train_samples, in_neurons, feature_length = training['inputs'].shape
+    test_samples = len(testing['inputs'])
+    print('Training samples:', train_samples.ljust(15),
+          'Testing samples:', test_samples)
+    print('Input neurons (max atoms):', in_neurons.ljust(15),
+          'Feature-vector length:', feature_length)
     training['inputs'] = training['inputs'].transpose([1, 0, 2])
     testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
 
     training['outputs'] = np.take(energies, training_set)
     testing['outputs'] = np.take(energies, testing_set)
-    print(len(training['outputs']), len(testing['outputs']))
 
-    training['compositions'] = np.take(compositions, training_set)
-    testing['compositions'] = np.take(compositions, testing_set)
-    print(set(training['compositions']))
-    print(set(testing['compositions']))
+    comp_strings = ['-'.join([str(el) for el in com])
+                    for com in compositions]
+    training['compositions'] = np.take(comp_strings, training_set, axis=0)
+    testing['compositions'] = np.take(comp_strings, testing_set, axis=0)
+
+    train_c = training['compositions']
+    test_c = testing['compositions']
+    common = grid_string(sorted(set(train_c).intersection(test_c)))
+    train_u = grid_string(sorted(set(train_c).difference(test_c)))
+    test_u = grid_string(sorted(set(test_c).difference(train_c)))
+    print('Unique compositions in training set:')
+    print(train_u)
+    print('Unique compositions in testing set:')
+    print(test_u)
+    print('Shared compositions in both training and testing sets:')
+    print(common)
 
     training['sizes'] = np.take(sizes, training_set)
     testing['sizes'] = np.take(sizes, testing_set)
