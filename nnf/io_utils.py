@@ -34,10 +34,11 @@ def num_decode(s):
 def generate_tag(unique_dict, add_on='0'):
     j_ints = ''.join([str(val) for val
                       in unique_dict.values()
-                      if isinstance(val, int)])
+                      if (isinstance(val, int)
+                          and not (isinstance(val, bool)))])
     floats = [np.log(val) * 10
               for val in unique_dict.values()
-              if isinstance(val, float)]
+              if (isinstance(val, float) and not val == 0)]
 
     float_strings = ['0{0:.0f}'.format(val) if val == abs(val)
                      else '{0:.0f}'.format(abs(val))
@@ -45,6 +46,23 @@ def generate_tag(unique_dict, add_on='0'):
 
     j_floats = ''.join(float_strings)
     tag = num_encode(int(j_ints + j_floats + add_on))
+    return tag
+
+
+def grid_string(entries, max_length=79, separator=', ', newline=';\n'):
+    assert len(entries) > 0
+    max_width = max([len(entry) for entry in entries])
+    grid_lines = ''
+    grid_line = str(entries.pop(0)).ljust(max_width)
+    while len(entries) > 0:
+        new_string = str(entries.pop(0)).ljust(max_width)
+        if (len(grid_line) + len(new_string)) > max_length:
+            grid_lines += grid_line + newline
+            grid_line = new_string
+        else:
+            grid_line += separator + new_string
+    return grid_lines
+
 
 def slice_from_str(string):
     """
@@ -92,7 +110,7 @@ def read_from_group(h5f, group_path):
 
 
 def write_to_group(h5f, group_path, dict_attrs, dict_dsets,
-                   dict_dset_types={}, **kwargs):
+                   dset_types={}, **kwargs):
     """
     Writes datasets and attributes to specified group.
 
@@ -101,11 +119,11 @@ def write_to_group(h5f, group_path, dict_attrs, dict_dsets,
         group_path (str): Path to group
         dict_dsets (dict): Dataset names and ndarrays.
         dict_attrs (dict): Attribute names and values.
-        dict_dset_types (dict): Optional data types for dataset(s).
+        dset_types (dict): Optional data types for dataset(s).
     """
     group = h5f.require_group(group_path)
     for dset_name, dset_data in dict_dsets.items():
-        dtype = dict_dset_types.get(dset_name, 'f4')
+        dtype = dset_types.get(dset_name, 'f4')
         try:
             dset = group[dset_name]
             dset.resize(len(dset_data), axis=0)
