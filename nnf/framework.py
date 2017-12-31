@@ -19,6 +19,7 @@ from nnf.batch_fingerprint import FingerprintProcessor
 from nnf.batch_preprocess import DataPreprocessor
 from nnf.io_utils import SettingsParser
 from nnf.network import Network
+from nnf.network_utils import ModelEvaluator
 
 PACKAGE_PATH = os.path.dirname(__file__)
 
@@ -30,7 +31,8 @@ def initialize_argparser():
     description = 'Framework for fitting neural network potentials.'
     argparser = argparse.ArgumentParser(description=description)
     argparser.add_argument('action', choices=['Collate', 'Fingerprint',
-                                              'Preprocess', 'Network'])
+                                              'Preprocess', 'Network',
+                                              'Analyze'])
     argparser.add_argument('--settings_file', '-s', default='settings.cfg',
                            help='Filename of settings.')
     argparser.add_argument('--verbosity', '-v', default=0,
@@ -132,4 +134,9 @@ if __name__ == '__main__':
             network.load_data(inputs_name, partitions_file, settings)
             final_loss = network.train_network(settings)
             print('\n\nFinal loss:', final_loss)
+    elif action == 'Analyze':
+        evaluator = ModelEvaluator(settings)
+        evaluator.model_from_file()
+        filenames = evaluator.settings['weights_filenames']
+        evaluator.plot_kfold_predictions(inputs_name, filenames)
     print('\n\n{}'.format(time.time() - t0), 'seconds elapsed.')
