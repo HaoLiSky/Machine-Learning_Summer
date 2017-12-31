@@ -13,7 +13,7 @@ from keras.models import Model
 from keras.layers import Input, Dense, Add, Dropout, Multiply
 from keras.layers import ActivityRegularization
 from keras.optimizers import Nadam, Adadelta, Adam, SGD
-from keras.callbacks import ModelCheckpoint
+from keras.callbacks import ModelCheckpoint, EarlyStopping
 from keras.callbacks import TerminateOnNaN
 from nnf.io_utils import generate_tag, SettingsParser
 from nnf.custom_keras_utils import spread, mean_pred, LossHistory, rmse_loss
@@ -25,10 +25,13 @@ activation_list = ['softplus',
                    'sigmoid',
                    'softplus']
 optimizer_list = [SGD(lr=0.1, decay=0.001,
-                      momentum=0.6, nesterov=True),
-                  Adam(clipnorm=1.0),
+                      momentum=0.9, nesterov=True),
+                  Adam(),
                   Nadam(),
                   Adadelta(),
+                  Adam(clipnorm=1.0),
+                  Nadam(clipnorm=1.0),
+                  Adadelta(clipnorm=1.0),
                   'rmsprop',
                   'adagrad',
                   'adamax']
@@ -167,7 +170,6 @@ class Network:
     """
     Artificial Neural Network.
     """
-
     def __init__(self, settings, **kwargs):
         self.settings = settings
         self.settings.update(kwargs)
@@ -259,7 +261,10 @@ class Network:
         # 5) define Keras callbacks that run alongside training
         history = LossHistory()
         nan_check = TerminateOnNaN()
-        callbacks = [history, nan_check]
+        es = EarlyStopping(monitor='val_loss',
+                           min_delta=0.1,
+                           patience=500)
+        callbacks = [history, nan_check, es]
         if self.record > 0:
             checkpoint_name = self.checkpoint_name.format(tag)
             checkpointer = ModelCheckpoint(filepath=checkpoint_name,
