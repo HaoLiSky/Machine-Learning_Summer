@@ -1,6 +1,7 @@
 """
 Preprocessing fingerprints for network input.
 """
+import os
 import argparse
 import h5py
 import numpy as np
@@ -354,6 +355,12 @@ def load_preprocessed(filename, partitions_file, k_test=0,
         energies = dsets_dict['energies']
         compositions = dsets_dict['element_counts']
         all_data = dsets_dict['all']
+    if os.path.isfile('ignore_tags'):
+        with open('ignore_tags', 'r') as file_:
+            ignore_tags = file_.read().split('\n')
+            ignore_tags = list(filter(None, ignore_tags))
+    else:
+        ignore_tags = []
     partitions = read_partitions(partitions_file)
     sizes = np.sum(compositions, axis=1)
     max_per_element = np.amax(compositions, axis=0)
@@ -366,7 +373,9 @@ def load_preprocessed(filename, partitions_file, k_test=0,
     validation_set = []
     # 2) Get designation tags for each molecule's fingerprint
     for j, m_name in enumerate(m_names):
-        if partitions[m_name] == k_test:
+        if np.any([ignore in m_name for ignore in ignore_tags]):
+            pass
+        elif partitions[m_name] == k_test:
             testing_set.append(j)
         elif partitions[m_name] == validation_tag:
             validation_set.append(j)
