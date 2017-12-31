@@ -327,7 +327,8 @@ def read_partitions(filename):
 
 
 def load_preprocessed(filename, partitions_file, k_test=0,
-                      validation_tag=-1, libver='latest'):
+                      validation_tag=-1, libver='latest',
+                      verbosity=1):
     """
     Args:
         filename (str): File with preprocessed fingerprint data.
@@ -340,6 +341,7 @@ def load_preprocessed(filename, partitions_file, k_test=0,
             not introduced to the network as either training or testing).
                 Defaults to -1.
         libver (str): Optional h5py argument for i/o. Defaults to 'latest'.
+        verbosity (int): Print details if greater than 0.
 
     Returns:
         system (dict): System details.
@@ -389,10 +391,7 @@ def load_preprocessed(filename, partitions_file, k_test=0,
     testing['inputs'] = np.take(all_data, testing_set, axis=0)
     train_samples, in_neurons, feature_length = training['inputs'].shape
     test_samples = len(testing['inputs'])
-    print('\nTraining samples:', str(train_samples).ljust(15),
-          'Testing samples:', test_samples)
-    print('Input neurons (max atoms):', str(in_neurons).ljust(15),
-          'Feature-vector length:', feature_length)
+
     training['inputs'] = training['inputs'].transpose([1, 0, 2])
     testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
 
@@ -409,15 +408,24 @@ def load_preprocessed(filename, partitions_file, k_test=0,
     common = grid_string(sorted(train_c.intersection(test_c)))
     train_u = grid_string(sorted(train_c.difference(test_c)))
     test_u = grid_string(sorted(test_c.difference(train_c)))
-    print('Unique compositions in training set:')
-    print(train_u)
-    print('Unique compositions in testing set:')
-    print(test_u)
-    print('Shared compositions in both training and testing sets:')
-    print(common)
+
+    if verbosity > 0:
+        print('\nTraining samples:', str(train_samples).ljust(15),
+              'Testing samples:', test_samples)
+        print('Input neurons (max atoms):', str(in_neurons).ljust(15),
+              'Feature-vector length:', feature_length)
+        print('Unique compositions in training set:')
+        print(train_u)
+        print('Unique compositions in testing set:')
+        print(test_u)
+        print('Shared compositions in both training and testing sets:')
+        print(common)
 
     training['sizes'] = np.take(sizes, training_set)
     testing['sizes'] = np.take(sizes, testing_set)
+
+    training['names'] = np.take(m_names, training_set, axis=0)
+    testing['names'] = np.take(m_names, testing_set, axis=0)
 
     system = {'sys_elements'   : sys_elements,
               'max_per_element': max_per_element}
