@@ -17,7 +17,7 @@ from keras.callbacks import ModelCheckpoint, EarlyStopping
 from keras.callbacks import TerminateOnNaN
 from nnf.io_utils import generate_tag, SettingsParser
 from nnf.custom_keras_utils import spread, mean_pred, LossHistory, rmse_loss
-from nnf.batch_preprocess import load_preprocessed
+from nnf.batch_preprocess import PartitionProcessor
 
 activation_list = ['softplus',
                    'relu',
@@ -149,23 +149,6 @@ def structure_model(input_vector_length, count_per_element, sys_elements,
     return model
 
 
-# def grid_search(loss, settings, restart=False):
-#     global stage, stage_time
-#     stage = 0
-#     stage_time = time()
-#
-#     for (batch_size, optimizer, activation,
-#          n_hlayers, dense_units,
-#          l1_reg, l2_reg, dropout,
-#          n_pair_params, n_triplet_params,
-#          k_test_ind) in list(product(*hyperparameter_sets)):
-#
-#         global stage
-#         stage = 1
-#
-#         print_progress('training model: ' + tag)
-
-
 class Network:
     """
     Artificial Neural Network.
@@ -191,10 +174,12 @@ class Network:
         """
         libver = self.settings['libver']
         k_test = run_settings['test_chunk']
-        system, self.train, self.test = load_preprocessed(filename,
-                                                          part_file,
-                                                          k_test=k_test,
-                                                          libver=libver)
+        part = PartitionProcessor({})
+        part.load_preprocessed(filename, libver=libver)
+        part.load_partitions_from_file(part_file)
+        (system,
+         self.train, self.test) = part.get_network_inputs(k_test=k_test)
+
         self.sys_elements = [val.decode('utf-8')
                              for val in system['sys_elements']]
         self.max_per_element = system['max_per_element']
@@ -224,7 +209,7 @@ class Network:
         save_period = self.settings['checkpoint_period']
         allow_restart = self.settings['allow_restart']
         # 0) generate identifier string from settings if none specified
-        if not tag:
+        if not tag or tag == 'None':
             tag = generate_tag(run_settings)
             j = 0
             while os.path.isfile(self.checkpoint_name.format(tag)):
@@ -333,7 +318,8 @@ class Network:
             self.load_data(run_settings['inputs_name'],
                            run_settings['partitions_file'],
                            run_settings)
-            run_testing_loss = self.train_network(run_settings)
+            run_testing_loss = self.train_network(run_settings,
+                                                  tag='_'+str(i+1))
             entry.append('{0:.4f}'.format(run_testing_loss))
             run_entries.append(entry)
 

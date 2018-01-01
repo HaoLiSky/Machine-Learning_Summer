@@ -6,6 +6,8 @@ import argparse
 import h5py
 import numpy as np
 import sklearn.preprocessing as skp
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 from itertools import combinations_with_replacement
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
 from nnf.io_utils import SettingsParser
@@ -154,161 +156,368 @@ class DataPreprocessor:
                            {'sys_elements': np.string_(self.sys_elements)},
                            scaling_standards)
 
-    def generate_simple_partitions(self, filename, split_frac, k=0):
+
+class PartitionProcessor:
+    def __init__(self, settings, **kwargs):
+        self.settings = settings
+        self.settings.update(kwargs)
+
+    def load_preprocessed(self, filename, libver='latest'):
+        """
+        Args:
+            filename (str): File with preprocessed fingerprint data.
+                e.g. preprocessed.h5
+            libver (str): Optional h5py argument for i/o. Defaults to 'latest'.
+        """
+        # 1) Read data from hdf5 file
+        with h5py.File(filename, 'r', libver=libver) as h5f:
+            attrs_dict, dsets_dict = read_from_group(h5f, 'preprocessed')
+            self.sys_elements = [specie.decode('utf-8')
+                                 for specie in
+                                 h5f['system'].attrs['sys_elements']]
+            self.m_names = [entry.decode('utf-8')
+                            for entry in dsets_dict['m_names']]
+            self.m_energies = dsets_dict['energies']
+            self.compositions = dsets_dict['element_counts']
+            self.all_data = dsets_dict['all']
+        if os.path.isfile('ignore_tags'):
+            with open('ignore_tags', 'r') as file_:
+                ignore_tags = file_.read().split('\n')
+                self.ignore_tags = list(filter(None, ignore_tags))
+        else:
+            self.ignore_tags = []
+
+        self.sizes = np.sum(self.compositions, axis=1)
+        self.max_per_element = np.amax(self.compositions, axis=0)
+        # maximum occurrences per atom type
+        assert not np.any(np.isnan(self.all_data))
+        assert not np.any(np.isinf(self.all_data))
+
+    def load_partitions_from_file(self, filename):
+        """
+        Class wrapper for read_partitions().
+        """
+        self.part_dict = read_partitions(filename)
+
+    def get_network_inputs(self, k_test=0, validation_tag=-1, verbosity=1):
+        """
+         Args:
+             k_test (int): Optional index of subsample for testing with
+                 stratified k-fold cross validation.
+             validation_tag: Optional designation tag for validation data
+             (i.e. not introduced to the network as either training or
+             testing). Defaults to -1.
+             verbosity (int): Print details if greater than 0.
+
+         Returns:
+             system (dict): System details.
+             training (dict): Data partitioned for training.
+             testing (dict): Data partitioned for testing.
+         """
+        training_set = []
+        testing_set = []
+        validation_set = []
+        # 2) Get designation tags for each molecule's fingerprint
+        for j, m_name in enumerate(self.m_names):
+            if np.any([ignore in m_name for ignore in self.ignore_tags]):
+                pass
+            elif self.part_dict[m_name] == k_test:
+                testing_set.append(j)
+            elif self.part_dict[m_name] == validation_tag:
+                validation_set.append(j)
+            else:
+                training_set.append(j)
+
+        # 3) Distribute entries to training or testing sets accordingly
+        training = {}
+        testing = {}
+        training['inputs'] = np.take(self.all_data, training_set, axis=0)
+        testing['inputs'] = np.take(self.all_data, testing_set, axis=0)
+        train_samples, in_neurons, feature_length = training['inputs'].shape
+        test_samples = len(testing['inputs'])
+
+        training['inputs'] = training['inputs'].transpose([1, 0, 2])
+        testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
+
+        training['outputs'] = np.take(self.m_energies, training_set)
+        testing['outputs'] = np.take(self.m_energies, testing_set)
+
+        comp_strings = ['-'.join([str(el) for el in com])
+                        for com in self.compositions]
+        training['compositions'] = np.take(comp_strings, training_set, axis=0)
+        testing['compositions'] = np.take(comp_strings, testing_set, axis=0)
+
+        train_c = set(training['compositions'])
+        test_c = set(testing['compositions'])
+        common = grid_string(sorted(train_c.intersection(test_c)))
+        train_u = grid_string(sorted(train_c.difference(test_c)))
+        test_u = grid_string(sorted(test_c.difference(train_c)))
+
+        if verbosity > 0:
+            print('\nTraining samples:', str(train_samples).ljust(15),
+                  'Testing samples:', test_samples)
+            print('Input neurons (max atoms):', str(in_neurons).ljust(15),
+                  'Feature-vector length:', feature_length)
+            print('Unique compositions in training set:')
+            print(train_u)
+            print('Unique compositions in testing set:')
+            print(test_u)
+            print('Shared compositions in both training and testing sets:')
+            print(common)
+
+        training['sizes'] = np.take(self.sizes, training_set)
+        testing['sizes'] = np.take(self.sizes, testing_set)
+
+        training['names'] = np.take(self.m_names, training_set, axis=0)
+        testing['names'] = np.take(self.m_names, testing_set, axis=0)
+
+        system = {'sys_elements'   : np.string_(self.sys_elements),
+                  'max_per_element': self.max_per_element}
+        return system, training, testing
+
+    def generate_partitions(self, filename, split_ratio, k=10, simple=True):
         """
         Generate comma-separated value file with training/testing
-        designations for each fingerprint.
+        designations for each fingerprint. Monte Carlo
+        method to solve multi-objective knapsack problem.
+
+        Non-simple: Groups are defined by the second-to-last number
+        in each identifier string, and are kept intact during distribution.
 
         Args:
             filename (str): Filename of .csv (e.g. partitions.csv)
-            split_frac (float): Fraction of dataset to designate for training.
-                e.g. 0.5 to set aside half for testing and half for training
+            split_ratio (list): Ratio of training, validation, holdout, etc.
+                e.g. [2.0, 1.0, 1.0] to set aside half for testing
+                and a quarter each for validation and holdout. Number of
+                entries, minus one, equal number of non-training bins.
             k (int): Optional number of subsamples for stratified k-fold.
-                e.g. 10 for 10-fold cross validation
+                e.g. 10 for 10-fold cross validation.
+            simple (bool): whether to randomly distribute samples individually.
+                (False: preserve groups when partitioning)
         """
-        assert k > 1 or split_frac < 1
-        assert self.m_energies
-        m_names = self.m_names
-        np.random.shuffle(m_names)
-        bins_dict = {}
-        # 1) separate data for testing set using specified fraction
-        if split_frac < 1:
-            split_ind = [int(np.ceil(len(m_names) * split_frac))]
-            training_group, validation_group = np.split(m_names, split_ind)
-            for entry in validation_group:
-                bins_dict[entry] = -1
-        else:
-            training_group = m_names
-        # 2) generate subsamples for stratified k-fold cross validation
-        if k > 1:
-            bins = [training_group[i::k] for i in range(k)]
-            for j, bin_ in enumerate(bins):
-                for entry in bin_:
-                    bins_dict[entry] = j
-        else:
-            for entry in training_group:
-                bins_dict[entry] = 0
-        organized_entries = sorted([(m_name, str(bins_dict[m_name]))
-                                    for m_name in m_names],
-                                   key=lambda x: x[1])
-        # 3) Write to file
-        header = 'Name,Designation (-1: testing, 0+: training);\n'
-        lines = [','.join(pair) for pair in organized_entries]
-        with open(filename, 'w') as fil:
-            text = header + ';\n'.join(lines)
-            fil.write(text)
+        assert self.m_energies.tolist()  # ensure read_fingerprints() completed
+        assert k > 1 or split_ratio != [1.0]
 
-    def generate_partitions(self, filename, split_frac, k=0):
-        """
-        Generate comma-separated value file with training/testing
-        designations for each fingerprint. Groups are defined by the second-
-        to-last number in
+        # normalize to sum to 1
+        split_ratio = np.divide(split_ratio, np.sum(split_ratio))
+        k = max(1, k)
+        v = len(split_ratio) - 1
+        total_entries = len(self.m_names)
+        n_bins = v + k
 
-        Args:
-            filename (str): Filename of .csv (e.g. partitions.csv)
-            split_frac (float): Fraction of dataset to designate for training.
-                e.g. 0.5 to set aside half for testing and half for training
-            k (int): Optional number of subsamples for stratified k-fold.
-                e.g. 10 for 10-fold cross validation
-        """
+        # number of subsamples for training and each validation/testing bin
+        val_bin_sizes = [(total_entries * fraction)
+                         for fraction in split_ratio]
+        n_train_samples = val_bin_sizes[0]
+        # evenly divide training subsamples into k bins
+        train_bin_size = n_train_samples / k
+        bin_eq_sizes = val_bin_sizes[1:] + [train_bin_size] * k
+
         max_iters = self.settings['max_iters']
-        size_tolerance_factor = self.settings['size_tolerance_factor']
-        assert self.m_energies  # ensure read_fingerprints() completed
-        assert k > 1 or split_frac < 1
-        self.m_groups = [name.split('.')[0].split('_')[-2]
-                         for name in self.m_names]
+        size_cost = self.settings['size_cost']
+        energy_cost = self.settings['energy_cost']
+        bin_energy_cost = self.settings['bin_energy_cost']
+
+        if simple:
+            self.m_groups = [name.split('.')[-1] for name in self.m_names]
+        else:
+            self.m_groups = [name.split('.')[0].split('_')[-2]
+                             for name in self.m_names]
         comps = {group: str(comp) for group, comp
-                 in zip(self.m_groups, self.m_element_counts)}
+                 in zip(self.m_groups, self.compositions)}
         energy_dict = {group: energy for group, energy
                        in zip(self.m_groups, self.m_energies)}
         groups_set = sorted(list(set(self.m_groups)), key=comps.get)
         size_dict = {group: self.m_groups.count(group) for group in groups_set}
         bins_dict = {}
-        # 1) separate data for testing set using specified fraction
-        if split_frac < 1:
-            iteration = 0
-            total_entries = len(self.m_names)
-            validation_groups = []
-            validation_total = 0
-            while iteration < max_iters:
-                iteration += 1
-                # randomly choose a data group
-                choice = np.random.choice(groups_set)
-                new_frac = ((validation_total + size_dict[choice])
-                            / total_entries)
-                # designate to testing set if it fits
-                if new_frac <= 1 - split_frac:
-                    validation_total += size_dict[choice]
-                    ind = groups_set.index(choice)
-                    validation_groups.append(groups_set.pop(ind))
-                    if new_frac == split_frac:
-                        break
-                        # if testing set size matches desired size, stop early
-            for entry in validation_groups:
-                bins_dict[entry] = -1
-        # 2) generate subsamples for stratified k-fold cross validation
-        if k > 1:
-            bins = [groups_set[i::k] for i in range(k)]
-            bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
-                         for bin_ in bins]
-            print(bin_sizes)
 
-            iteration = 0
-            size_tolerance = np.mean(bin_sizes) / size_tolerance_factor
-            energy_best = np.inf
-            bins_best = list(bins)
+        # 1) Generate subsamples for stratified k-fold cross validation
+        bins = [groups_set[i::n_bins] for i in range(n_bins)]
+        iteration = 0
+        bins_best = bins[:]
+        cost_best = np.inf
+        e_range = np.max(self.m_energies) - np.min(self.m_energies)
+        bins = [sorted(bin_, key=size_dict.get) for bin_ in bins]
+        mean_e, var_mean_e = zip(*[mean_energy(bin_,
+                                               energy_dict,
+                                               size_dict)
+                                   for bin_ in bins])
+        # 2) Monte Carlo to maximize variation within bins and
+        #    minimize variation across bins while maintaining bin size
+        try:
             while iteration < max_iters:
                 iteration += 1
+                # resort each bin's groups from lowest to highest energy
+                bins = [sorted(bin_, key=energy_dict.get) for bin_ in bins]
+                bin_diffs = np.subtract(mean_e, np.mean(mean_e))
+                lowest_bin = int(np.argmin(bin_diffs))
+                highest_bin = int(np.argmax(bin_diffs))
+                # randomly move a group from the lowest-mean-energy-bin
+                # to the highest-mean-energy-bin and vice versa
+                rand_ind = int(np.random.rand() * len(bins[lowest_bin]))
+                bins[highest_bin].append(bins[lowest_bin].pop(rand_ind))
+                rand_ind = int(np.random.rand() * len(bins[highest_bin]))
+                bins[lowest_bin].append(bins[highest_bin].pop(rand_ind))
+                # resort each bin's groups from least samples to most samples
                 bins = [sorted(bin_, key=size_dict.get) for bin_ in bins]
-                # bins internally sorted from smallest groups to largest groups
-                smallest = int(np.argmin(bin_sizes))
-                largest = int(np.argmax(bin_sizes))
-                rand_ind = int(np.round(np.abs(np.random.rand()
-                                               * (len(bins[largest]) / 2))))
-                # randomly choose group from first half of largest bin
-                bins[smallest].append(bins[largest].pop(rand_ind))
-                bin_sizes = [np.sum([size_dict[entry]
-                                     for entry in bin_]) for bin_ in bins]
-                mean_energies = [mean_energy(bin_,
-                                             energy_dict,
-                                             size_dict) for bin_ in bins]
-                if (np.std(bin_sizes) < size_tolerance
-                        and np.std(mean_energies) < energy_best):
-                    energy_best = np.std(mean_energies)
-                    bins_best = bins
-            bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
-                         for bin_ in bins_best]
-            print(bin_sizes)
-            for j, bin_ in enumerate(bins_best):
-                for entry in bin_:
-                    bins_dict[entry] = j
-        else:  # i.e. only split into training and testing groups
-            for entry in groups_set:
-                bins_dict[entry] = 0
+                bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
+                             for bin_ in bins]
+                bin_diffs = np.subtract(bin_sizes, bin_eq_sizes)
+                # randomly move a group from the largest bin to the
+                # smallest bin,relative to desired sizes
+                smallest_bin = int(np.argmin(bin_diffs))
+                largest_bin = int(np.argmax(bin_diffs))
+                rand_ind = int(np.random.rand() * len(bins[largest_bin]))
+                bins[smallest_bin].append(bins[largest_bin].pop(rand_ind))
+                # calculate cost function
+
+                bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
+                             for bin_ in bins]
+                bin_diffs = np.subtract(bin_sizes, bin_eq_sizes)
+                var_bin_diff = np.var(np.abs(bin_diffs))
+                mean_e, var_mean_e = zip(*[mean_energy(bin_,
+                                                       energy_dict,
+                                                       size_dict)
+                                           for bin_ in bins])
+                var_energies = np.mean(np.divide(var_mean_e, e_range))
+                var_bin_energies = np.var(mean_e)
+
+                cost = (size_cost * var_bin_diff
+                        + bin_energy_cost * var_bin_energies
+                        - energy_cost * var_energies)
+                if cost < cost_best:
+                    bins_best = list(bins)
+                    cost_best = float(cost)
+                    print('Best Trial: {}'.format(iteration), end='   \r')
+
+        except (KeyboardInterrupt, SystemExit):
+            print('\n')
+
+        best_bin_sizes = [np.sum([size_dict[entry] for entry in bin_])
+                          for bin_ in bins_best]
+        best_bin_diffs = np.subtract(best_bin_sizes, bin_eq_sizes)
+        print('\nFinal bin sizes:', best_bin_sizes)
+        print('\nFinal bin deltas:', best_bin_diffs)
+
+        mean_e, var_mean_e = zip(*[mean_energy(bin_,
+                                               energy_dict,
+                                               size_dict)
+                                   for bin_ in bins_best])
+        std_e = np.sqrt(var_mean_e)
+        for j, bin_ in enumerate(bins_best):
+            print('k = {0} mean E: {1:.2f}, std: {2:.2f}'.format(j - v,
+                                                                 mean_e[j],
+                                                                 std_e[j]))
+            for entry in bin_:
+                bins_dict[entry] = j - v
+
         # 3) Assign designation tags to each molecule's fingerprint
         organized_entries = []
-        for m_name in self.m_names:
+        sample_bins = {}
+        for m_name in sorted(self.m_names):
             group = m_name.split('.')[0].split('_')[-2]
             bin_designation = bins_dict[group]
             organized_entries.append([m_name, str(bin_designation)])
+            sample_bins[m_name] = bin_designation
         organized_entries = sorted(organized_entries, key=lambda x: x[1])
         # 4) Write to file
-        header = 'Name,Designation (-1: testing, 0+: training);\n'
+        header = 'Name,Designation;\n'
         lines = [','.join(pair) for pair in organized_entries]
         with open(filename, 'w') as fil:
             text = header + ';\n'.join(lines)
             fil.write(text)
 
+        self.part_dict = sample_bins
+
+    def plot_composition_distribution(self, filename=None, even=0):
+        assert self.part_dict  # from load_partitions or generate_partitions
+        assert self.compositions.tolist()  # from load_preprocessed
+
+        bins = {}
+        for m_name, bin_ in sorted(self.part_dict.items()):
+            composition = self.compositions[self.m_names.index(m_name)]
+            bins.setdefault(bin_, []).append(composition)
+        n_bins = len(bins.keys())
+        labels = ['k={}'.format(bin_tag) for bin_tag in bins.keys()]
+        n_v = len([x for x in bins.keys() if int(x) < 0])
+        n_k = n_bins - n_v
+        vcols = plt.cm.Dark2(np.linspace(0, 1, n_v))
+        kcols = plt.cm.rainbow(np.linspace(0, 1, n_k))
+        cols = np.concatenate([vcols, kcols])
+        vmark = 'x'
+        kmark = 'o'
+        marks = [vmark] * n_v + [kmark] * n_k
+
+        nnary = len(self.compositions.shape)
+        print(nnary)
+        if nnary == 1:
+            # Unary system, plot histogram
+            if even > 0:
+                # evenly spaced bins
+                data = np.stack(bins.values())
+                plt.hist(data, even, histtype='bar', colors=cols,
+                         labels=labels, stacked=False)
+            else:
+                # one bar per composition for sparse composition space
+                composition_set = sorted(set(self.compositions))
+                bars = np.arange(len(composition_set))
+                data = [0 for comp in composition_set]
+                width = 0.35
+                for bin_, col in zip(sorted(bins.keys()), cols):
+                    data_new = [bins[bin_].count(comp)
+                                for comp in composition_set]
+                    plt.bar(bars, data_new, width, color=col, bottom=data,
+                            label=bin_)
+                    data = data_new
+
+                plt.ylabel('Samples')
+                plt.xticks(bars, [str(comp) for comp in composition_set])
+                plt.legend()
+                plt.show()
+
+        if nnary == 2:
+            x, y = zip(*self.compositions)
+            maxes = [max(x), max(y)]
+
+            fig, axes = plt.subplots(nrows=1, ncols=2)
+            ax0, ax1 = axes.flatten()
+            h = ax0.hist2d(x, y, bins=maxes, norm=LogNorm())
+            ax0.set_title('Overall distribution')
+            ax0.set_xlabel(self.sys_elements[0])
+            ax0.set_ylabel(self.sys_elements[1])
+
+            xos = np.cos(np.linspace(0, 2*np.pi, n_bins)) * 0.1
+            yos = np.sin(np.linspace(0, 2*np.pi, n_bins)) * 0.1
+
+            for (bin_, col, mark,
+                 xo, yo) in zip(sorted(bins.keys()), cols, marks, xos, yos):
+                x, y = zip(*bins[bin_])
+                x = np.add(x, xo)
+                y = np.add(y, yo)
+                ax1.scatter(x, y, s=10, color=col, label=bin_)
+            ax1.legend()
+            ax1.set_title('Distribution by subset')
+            ax1.set_xlabel(self.sys_elements[0])
+            ax1.set_ylabel(self.sys_elements[1])
+
+            try:
+                fig.colorbar(h[3], ax=ax0)
+            except:
+                pass
+            fig.tight_layout()
+            plt.show()
 
 def mean_energy(bin_, energy_dict, size_dict):
     """
     Weighted average of energy. Intermediate function for
     sorting stratified kfold chunks.
     """
-    products = [np.multiply(energy_dict[entry],
-                            size_dict[entry]) for entry in bin_]
-    divisor = np.sum([size_dict[entry] for entry in bin_])
-    return np.sum(products) / divisor
+    group_energies, group_sizes = zip(*[(energy_dict[entry], size_dict[entry])
+                                        for entry in bin_])
+    sample_energies = np.repeat(group_energies, group_sizes)
+    mean_e = np.mean(sample_energies)
+    var_mean_e = np.var(sample_energies)
+    return mean_e, var_mean_e
 
 
 def read_partitions(filename):
@@ -324,112 +533,6 @@ def read_partitions(filename):
     entries = [line.replace(';\n', '').split(',') for line in lines]
     partition_dict = {m_name: int(bin_) for m_name, bin_ in entries}
     return partition_dict
-
-
-def load_preprocessed(filename, partitions_file, k_test=0,
-                      validation_tag=-1, libver='latest',
-                      verbosity=1):
-    """
-    Args:
-        filename (str): File with preprocessed fingerprint data.
-            e.g. fingerprints.h5
-        partitions_file (str): File with training/testing partitions.
-            e.g. partitions.csv
-        k_test (int): Optional index of subsample for testing with
-            stratified k-fold cross validation.
-        validation_tag: Optional designation tag for validation data (i.e.
-            not introduced to the network as either training or testing).
-                Defaults to -1.
-        libver (str): Optional h5py argument for i/o. Defaults to 'latest'.
-        verbosity (int): Print details if greater than 0.
-
-    Returns:
-        system (dict): System details.
-        training (dict): Data partitioned for training.
-        testing (dict): Data partitioned for testing.
-    """
-    # 1) Read data from hdf5 file
-    with h5py.File(filename, 'r', libver=libver) as h5f:
-        attrs_dict, dsets_dict = read_from_group(h5f, 'preprocessed')
-        sys_elements = h5f['system'].attrs['sys_elements']
-        m_names = [entry.decode('utf-8')
-                   for entry in dsets_dict['m_names']]
-        energies = dsets_dict['energies']
-        compositions = dsets_dict['element_counts']
-        all_data = dsets_dict['all']
-    if os.path.isfile('ignore_tags'):
-        with open('ignore_tags', 'r') as file_:
-            ignore_tags = file_.read().split('\n')
-            ignore_tags = list(filter(None, ignore_tags))
-    else:
-        ignore_tags = []
-    partitions = read_partitions(partitions_file)
-    sizes = np.sum(compositions, axis=1)
-    max_per_element = np.amax(compositions, axis=0)
-    # maximum occurrences per atom type
-    assert not np.any(np.isnan(all_data))
-    assert not np.any(np.isinf(all_data))
-
-    training_set = []
-    testing_set = []
-    validation_set = []
-    # 2) Get designation tags for each molecule's fingerprint
-    for j, m_name in enumerate(m_names):
-        if np.any([ignore in m_name for ignore in ignore_tags]):
-            pass
-        elif partitions[m_name] == k_test:
-            testing_set.append(j)
-        elif partitions[m_name] == validation_tag:
-            validation_set.append(j)
-        else:
-            training_set.append(j)
-
-    # 3) Distribute entries to training or testing sets accordingly
-    training = {}
-    testing = {}
-    training['inputs'] = np.take(all_data, training_set, axis=0)
-    testing['inputs'] = np.take(all_data, testing_set, axis=0)
-    train_samples, in_neurons, feature_length = training['inputs'].shape
-    test_samples = len(testing['inputs'])
-
-    training['inputs'] = training['inputs'].transpose([1, 0, 2])
-    testing['inputs'] = testing['inputs'].transpose([1, 0, 2])
-
-    training['outputs'] = np.take(energies, training_set)
-    testing['outputs'] = np.take(energies, testing_set)
-
-    comp_strings = ['-'.join([str(el) for el in com])
-                    for com in compositions]
-    training['compositions'] = np.take(comp_strings, training_set, axis=0)
-    testing['compositions'] = np.take(comp_strings, testing_set, axis=0)
-
-    train_c = set(training['compositions'])
-    test_c = set(testing['compositions'])
-    common = grid_string(sorted(train_c.intersection(test_c)))
-    train_u = grid_string(sorted(train_c.difference(test_c)))
-    test_u = grid_string(sorted(test_c.difference(train_c)))
-
-    if verbosity > 0:
-        print('\nTraining samples:', str(train_samples).ljust(15),
-              'Testing samples:', test_samples)
-        print('Input neurons (max atoms):', str(in_neurons).ljust(15),
-              'Feature-vector length:', feature_length)
-        print('Unique compositions in training set:')
-        print(train_u)
-        print('Unique compositions in testing set:')
-        print(test_u)
-        print('Shared compositions in both training and testing sets:')
-        print(common)
-
-    training['sizes'] = np.take(sizes, training_set)
-    testing['sizes'] = np.take(sizes, testing_set)
-
-    training['names'] = np.take(m_names, training_set, axis=0)
-    testing['names'] = np.take(m_names, testing_set, axis=0)
-
-    system = {'sys_elements'   : sys_elements,
-              'max_per_element': max_per_element}
-    return system, training, testing
 
 
 def normalize_to_vectors(unprocessed_data, Alpha):
@@ -586,7 +689,7 @@ if __name__ == '__main__':
     output_name = settings['outputs_name']
     sys_elements = settings['sys_elements']
     partitions_file = settings['partitions_file']
-    split_fraction = settings['split_fraction']
+    split_fraction = settings['split_ratio']
     kfold = settings['kfold']
     assert sys_elements != ['None']
 

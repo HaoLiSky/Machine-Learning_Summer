@@ -16,7 +16,7 @@ import argparse
 import time
 from nnf.batch_collate import BatchCollator
 from nnf.batch_fingerprint import FingerprintProcessor
-from nnf.batch_preprocess import DataPreprocessor
+from nnf.batch_preprocess import DataPreprocessor, PartitionProcessor
 from nnf.io_utils import SettingsParser
 from nnf.network import Network
 from nnf.network_utils import ModelEvaluator
@@ -31,8 +31,8 @@ def initialize_argparser():
     description = 'Framework for fitting neural network potentials.'
     argparser = argparse.ArgumentParser(description=description)
     argparser.add_argument('action', choices=['Collate', 'Fingerprint',
-                                              'Preprocess', 'Network',
-                                              'Analyze'])
+                                              'Preprocess', 'Partition',
+                                              'Network', 'Analyze'])
     argparser.add_argument('--settings_file', '-s', default='settings.cfg',
                            help='Filename of settings.')
     argparser.add_argument('--verbosity', '-v', default=0,
@@ -61,17 +61,23 @@ if __name__ == '__main__':
     if os.path.isfile(outputs_name) and not force:
         while True:
             reply = str(input('File "{}"exists. \
-            Merge/overwrite?'.format(outputs_name)).lower().strip())
-            if reply[0] == 'y':
-                break
-            elif reply[0] == 'n':
-                try:
-                    output_split = outputs_name.split('Copy')
-                    ind = int(output_split[-1]) + 1
-                    outputs_name = '{}Copy{}'.format(output_split[0], ind)
-                except (IndexError, ValueError):
-                    outputs_name = '{}Copy{}'.format(outputs_name, 1)
-                break
+    Merge/overwrite? (y/n) '.format(outputs_name)).lower().strip())
+            try:
+                if reply[0] == 'y':
+                    break
+                elif reply[0] == 'n':
+                    ind = 1
+                    outputs_path = os.path.splitext(outputs_name)
+                    outputs_name = '{}Copy{}{}'.format(outputs_path[0], ind,
+                                                       outputs_path[1])
+                    while os.path.isfile(outputs_name):
+                        ind = ind + 1
+                        outputs_name = '{}Copy{}{}'.format(outputs_path[0],
+                                                           ind,
+                                                           outputs_path[1])
+                    break
+            except IndexError:
+                pass
     t0 = time.time()
 
     if action == 'Collate':
@@ -102,10 +108,6 @@ if __name__ == '__main__':
             processor.export_entries(inputs_name.split('.')[0] + '.csv')
     elif action == 'Preprocess':
         # Preprocess fingerprints into normalized vectors for machine learning
-        partitions_file = settings['partitions_file']
-        split_fraction = settings['split_fraction']
-        kfold = settings['kfold']
-        simple = settings['simple']
         sys_elements = settings['sys_elements']
         assert sys_elements != ['None']
         assert len(sys_elements) == len(set(sys_elements))
@@ -116,27 +118,33 @@ if __name__ == '__main__':
         preprocessor.subdivide_by_parameter_set(subdivisions)
         preprocessor.preprocess_fingerprints()
         preprocessor.to_file(outputs_name)
-        if simple:
-            preprocessor.generate_simple_partitions(partitions_file,
-                                                    split_fraction,
-                                                    k=kfold)
-        else:
-            preprocessor.generate_partitions(partitions_file, split_fraction,
-                                             k=kfold)
+    elif action == 'Partition':
+        simple = settings['simple']
+        split_ratio = settings['split_ratio']
+        kfold = settings['kfold']
+        libver = settings['libver']
+        partitioner = PartitionProcessor(settings)
+        partitioner.load_preprocessed(inputs_name, libver=libver)
+        partitioner.generate_partitions(outputs_name,
+                                        split_ratio,
+                                        k=kfold,
+                                        simple=simple)
+        partitioner.plot_composition_distribution()
     elif action == 'Network':
         # Create and train Keras models
         partitions_file = settings['partitions_file']
+        tag = settings['tag']
         network = Network(settings)
         # Combinatorial grid-search for parameter/hyperparameter space
         if args.GridSearch:
             network.grid_search(args.settings_file, outputs_name)
         else:
             network.load_data(inputs_name, partitions_file, settings)
-            final_loss = network.train_network(settings)
+            final_loss = network.train_network(settings, tag=tag)
             print('\n\nFinal loss:', final_loss)
     elif action == 'Analyze':
         evaluator = ModelEvaluator(settings)
         evaluator.model_from_file()
         filenames = evaluator.settings['weights_filenames']
         evaluator.plot_kfold_predictions(inputs_name, filenames)
-    print('\n\n{}'.format(time.time() - t0), 'seconds elapsed.')
+    print('\n\n{0:.2f}'.format(time.time() - t0), 'seconds elapsed.')

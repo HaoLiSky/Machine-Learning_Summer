@@ -12,7 +12,7 @@ from keras.models import load_model
 from keras.utils.generic_utils import get_custom_objects
 from nnf.custom_keras_utils import rmse_loss, mean_pred, spread
 from nnf.custom_keras_utils import LossHistory, endmask
-from nnf.batch_preprocess import load_preprocessed
+from nnf.batch_preprocess import read_partitions, PartitionProcessor
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -83,15 +83,18 @@ class ModelEvaluator:
     def plot_kfold_predictions(self, filename, weights_filenames):
         partitions_file = self.settings['partitions_file']
         libver = self.settings['libver']
-        k_list = [-1] + list(range(len(weights_filenames)))
+        part_dict = read_partitions(partitions_file)
+        k_list = sorted(set(part_dict.keys()))
 
         data_dict = {}
+        part = PartitionProcessor({})
+        part.load_preprocessed(filename, libver=libver)
+
+        part.load_partitions_from_file(partitions_file)
+
         for k in k_list:
-            system, train, test = load_preprocessed(filename,
-                                                    partitions_file,
-                                                    k_test=k,
-                                                    libver=libver,
-                                                    verbosity=0)
+            (system, train, test) = part.get_network_inputs(k_test=k)
+
             data_dict[str(k)] = {}
             data_dict[str(k)]['inputs'] = test['inputs']
             data_dict[str(k)]['outputs'] = test['outputs']
@@ -127,13 +130,13 @@ class ModelEvaluator:
         r2 = 1 - np.divide(ssres, sstot)
         print('R-squared:', r2)
         plt.plot(act_comb, act_comb, color='k')
-        cols = ['r', 'g', 'b', 'm', 'c', 'y'][:len(k_list)]
-        labels = ['k={}'.format(k) for k in k_list[1:]]
+        cols = plt.cm.tab20(np.linspace(0, 1, len(k_list)))
+        labels = ['k={}'.format(k) for k in k_list]
         labels.append('validation')
         for act, pred, col, label in zip(actuals, preds, cols, labels):
             plt.scatter(act, pred, s=5, color=col, label=label)
         plt.title('Predicted vs. Actual Energy: \
-            RMSE = {0:.4f} meV, R^2 = {1:.4f}'.format(rmse, r2))
+        RMSE = {0:.4f} meV, R^2 = {1:.4f}'.format(rmse, r2))
         plt.legend()
         plt.ylabel('Predicted (meV)')
         plt.xlabel('Actual (meV)')
