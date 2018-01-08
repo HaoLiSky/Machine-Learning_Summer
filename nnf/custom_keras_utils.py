@@ -5,7 +5,7 @@ import sys
 
 import keras.backend as K
 import tensorflow as tf
-
+import numpy as np
 from keras.callbacks import Callback
 from keras.engine.topology import Layer
 
@@ -35,18 +35,35 @@ class endmask(Layer):
         return outputs
 
 
-class LossHistory(Callback):
+class LossTracking(Callback):
     def __init__(self):
         self.seen = 0
         self.test_losses = []
         self.train_losses = []
         self.logs = {}
+        self.patience = 50
+        self.overfit_steps = 0
+        self.threshold = 0.9
+        self.best_val_loss = np.inf
 
     def on_epoch_end(self, epoch, logs):
-        self.train_losses.append(logs.get('loss'))
-        self.test_losses.append(logs.get('val_loss'))
-
         self.seen += 1
+        current_loss = logs.get('loss')
+        current_val_loss = logs.get('val_loss')
+        if current_val_loss < self.best_val_loss:
+            self.best_val_loss = current_val_loss
+
+        if (current_loss < current_val_loss * self.threshold
+                and current_val_loss > self.best_val_loss):
+            self.overfit_steps += 1
+            if self.overfit_steps > self.patience:
+                print('Stopped early after {} epochs.'.format(self.seen))
+                self.model.stop_training = True
+        else:
+            self.overfit_steps = 0
+        self.train_losses.append(current_loss)
+        self.test_losses.append(current_val_loss)
+
         # if self.seen % self.display == 0:
         try:
             print('\r{}:'.format(self.seen).ljust(8),
