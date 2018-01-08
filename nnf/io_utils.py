@@ -186,4 +186,8 @@ class SettingsParser:
         for key in self.types.get('bools', []):
             self.settings[key] = [bool(val)
                                   for val in self.section.get(key).split(',')]
+        for key in self.types.get('intlists', []):
+            self.settings[key] = [[int(val) for val in lis.split(',')]
+                                  for lis in self.section.get(key).split(';')]
+
         return self.settings
