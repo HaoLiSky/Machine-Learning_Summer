@@ -325,14 +325,14 @@ class BatchCollator:
         """
         print('Entries:', len(self.entries))
         sizes = [int(entry[1]) for entry in self.entries]
-        compositions = np.asarray([entry[3].decode('utf-8')
+        compositions = np.asarray([entry[2].decode('utf-8')
                                    for entry in self.entries])
         energies = [float(entry[-1]) for entry in self.entries]
         print('System Elements:', self.sys_elements)
         print('Min Size:', np.min(sizes), ':', compositions[np.argmin(sizes)])
         print('Max Size:', np.max(sizes), ':', compositions[np.argmax(sizes)])
         print('Size std:', np.std(sizes))
-        print('Unique Compositions:', len(set(compositions)))
+        print('Unique Compositions:', len(set(compositions.tolist())))
         print('Min energy:', np.min(energies))
         print('Max energy:', np.max(energies))
         print('Energy std:', np.std(energies))

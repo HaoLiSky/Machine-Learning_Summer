@@ -177,7 +177,7 @@ class FingerprintProcessor:
                         m_name_new = '{}.{}'.format('.'.join(m_name.
                                                              split('.')[:-1]),
                                                     self.m_count)
-                        path = 'fingerprints/' + m_name_new
+                        path = descriptor + '/' + m_name_new
                         entry = fp.to_file(h5o, path)
                         self.entries.append(entry)
                         self.m_count += 1

@@ -11,7 +11,7 @@ from keras.utils import plot_model
 from keras.models import load_model
 from keras.utils.generic_utils import get_custom_objects
 from nnf.custom_keras_utils import rmse_loss, mean_pred, spread
-from nnf.custom_keras_utils import LossHistory, endmask
+from nnf.custom_keras_utils import LossTracking, endmask
 from nnf.batch_preprocess import read_partitions, PartitionProcessor
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -30,7 +30,7 @@ class ModelEvaluator:
         get_custom_objects().update({'rmse_loss'  : rmse_loss,
                                      'mean_pred'  : mean_pred,
                                      'spread'     : spread,
-                                     'LossHistory': LossHistory,
+                                     'LossTracking': LossTracking,
                                      'endmask'    : endmask})
         self.model = load_model(self.model_file)
 
@@ -41,8 +41,12 @@ class ModelEvaluator:
         else:
             self.ignore_tags = []
 
-    def plot_average_predictions(self, filename, weights_filenames):
+    def plot_subsample_predictions(self, filename, weights_filename):
         libver = self.settings['libver']
+        k_test = self.settings['validation_ind']
+        partitions_file = self.settings['partitions_file']
+        part_dict = read_partitions(partitions_file)
+
         with h5py.File(filename, 'r', libver=libver) as h5f:
             self.all_data = h5f['preprocessed/all'][()]
             self.sizes = np.sum(h5f['preprocessed/element_counts'][()], axis=1)
@@ -50,19 +54,25 @@ class ModelEvaluator:
             self.m_names = [name.decode('utf-8')
                             for name in h5f['preprocessed/m_names'][()]]
         predictions = []
-        for k, weights_file in enumerate(weights_filenames):
-            self.model.load_weights(weights_file)
-            use_set = []
-            for j, m_name in enumerate(self.m_names):
-                if not np.any([ign in m_name for ign in self.ignore_tags]):
+
+        self.model.load_weights(weights_filename[0])
+        use_set = []
+        for j, m_name in enumerate(self.m_names):
+            if not np.any([ign in m_name for ign in self.ignore_tags]):
+                if part_dict[m_name] == k_test:
                     use_set.append(j)
-            inputs = np.take(self.all_data, use_set, axis=0)
-            actuals = np.take(self.energy_list, use_set, axis=0)
-            inputs = inputs.transpose([1, 0, 2])
-            inputs = [atom for atom in inputs]
-            sizes = np.take(self.sizes, use_set, axis=0)
-            inputs.append(np.reciprocal(np.asarray(sizes).astype(float)))
-            predictions.append(self.model.predict(inputs).flatten())
+        inputs = np.take(self.all_data, use_set, axis=0)
+        actuals = np.take(self.energy_list, use_set, axis=0)
+        inputs = inputs.transpose([1, 0, 2])
+        inputs = [atom for atom in inputs]
+        sizes = np.take(self.sizes, use_set, axis=0)
+        inputs.append(np.reciprocal(np.asarray(sizes).astype(float)))
+        pred = self.model.predict(inputs)
+        try:
+            predictions.append(pred.flatten().tolist())
+        except AttributeError:
+            predictions.append(pred)
+
         predictions_average = np.mean(predictions, axis=0)
         diff = np.subtract(actuals, predictions_average)
         rmse = np.sqrt(np.mean(diff)**2)
@@ -84,7 +94,7 @@ class ModelEvaluator:
         partitions_file = self.settings['partitions_file']
         libver = self.settings['libver']
         part_dict = read_partitions(partitions_file)
-        k_list = sorted(set(part_dict.keys()))
+        k_list = sorted(set(part_dict.values()))
 
         data_dict = {}
         part = PartitionProcessor({})
@@ -93,8 +103,8 @@ class ModelEvaluator:
         part.load_partitions_from_file(partitions_file)
 
         for k in k_list:
-            (system, train, test) = part.get_network_inputs(k_test=k)
-
+            (system, train, test) = part.get_network_inputs(testing_tags=[k],
+                                                            verbosity=0)
             data_dict[str(k)] = {}
             data_dict[str(k)]['inputs'] = test['inputs']
             data_dict[str(k)]['outputs'] = test['outputs']
@@ -110,7 +120,11 @@ class ModelEvaluator:
                 inputs = [atom for atom in inputs]
                 sizes = data_dict[str(k)]['sizes']
                 inputs.append(np.reciprocal(np.asarray(sizes).astype(float)))
-                preds.append(self.model.predict(inputs).flatten().tolist())
+                pred = self.model.predict(inputs)
+                try:
+                    preds.append(pred.flatten().tolist())
+                except AttributeError:
+                    preds.append(pred)
                 actuals.append(reference)
             v_inputs = data_dict['-1']['inputs']
             v_inputs = [atom for atom in v_inputs]
@@ -130,7 +144,7 @@ class ModelEvaluator:
         r2 = 1 - np.divide(ssres, sstot)
         print('R-squared:', r2)
         plt.plot(act_comb, act_comb, color='k')
-        cols = plt.cm.tab20(np.linspace(0, 1, len(k_list)))
+        cols = plt.cm.rainbow(np.linspace(0, 1, len(k_list)))
         labels = ['k={}'.format(k) for k in k_list]
         labels.append('validation')
         for act, pred, col, label in zip(actuals, preds, cols, labels):
