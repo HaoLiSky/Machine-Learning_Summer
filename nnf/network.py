@@ -16,7 +16,7 @@ from keras.optimizers import Nadam, Adadelta, Adam, SGD
 from keras.callbacks import ModelCheckpoint, EarlyStopping
 from keras.callbacks import TerminateOnNaN
 from nnf.io_utils import generate_tag, SettingsParser
-from nnf.custom_keras_utils import spread, mean_pred, LossHistory, rmse_loss
+from nnf.custom_keras_utils import spread, mean_pred, LossTracking, rmse_loss
 from nnf.batch_preprocess import PartitionProcessor
 
 activation_list = ['softplus',
@@ -173,12 +173,13 @@ class Network:
                 a unique value of k_test for k-fold cross validation.
         """
         libver = self.settings['libver']
-        k_test = run_settings['test_chunk']
+        test_tags = run_settings['test_chunk']
         part = PartitionProcessor({})
         part.load_preprocessed(filename, libver=libver)
         part.load_partitions_from_file(part_file)
         (system,
-         self.train, self.test) = part.get_network_inputs(k_test=k_test)
+         self.train,
+         self.test) = part.get_network_inputs(testing_tags=test_tags)
 
         self.sys_elements = [val.decode('utf-8')
                              for val in system['sys_elements']]
@@ -244,12 +245,9 @@ class Network:
         assert not np.any(np.isnan(untrained_sample))
         assert not np.any(np.isinf(untrained_sample))
         # 5) define Keras callbacks that run alongside training
-        history = LossHistory()
+        history = LossTracking()
         nan_check = TerminateOnNaN()
-        es = EarlyStopping(monitor='val_loss',
-                           min_delta=0.1,
-                           patience=500)
-        callbacks = [history, nan_check, es]
+        callbacks = [history, nan_check]
         if self.record > 0:
             checkpoint_name = self.checkpoint_name.format(tag)
             checkpointer = ModelCheckpoint(filepath=checkpoint_name,

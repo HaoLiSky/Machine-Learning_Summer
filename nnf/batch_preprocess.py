@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import sklearn.preprocessing as skp
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from matplotlib.colors import LogNorm
 from itertools import combinations_with_replacement
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
@@ -55,9 +56,10 @@ class DataPreprocessor:
 
         libver = self.settings['libver']
         index = self.settings['index']
+        descriptor = self.settings['descriptor']
         with h5py.File(filename, 'r', libver=libver) as h5f:
             # 1) read list of names from system/sys_entries dataset
-            self.m_names = list(h5f.require_group('fingerprints').keys())
+            self.m_names = list(h5f.require_group(descriptor).keys())
             self.m_names = np.asarray(self.m_names)[slice_from_str(index)]
             self.sys_elements = [symbol.decode('utf-8')
                                  for symbol
@@ -65,7 +67,7 @@ class DataPreprocessor:
             # 2) Loop through fingerprints, loading data to object
             for j, m_name in enumerate(self.m_names):
                 print('read', j, end='\r')
-                path = 'fingerprints/' + m_name
+                path = descriptor + '/' + m_name
                 fp = Fingerprint()
                 fp.from_file(h5f, path, self.sys_elements)
                 self.g.append([fp.dsets_dict[key]
@@ -199,14 +201,10 @@ class PartitionProcessor:
         """
         self.part_dict = read_partitions(filename)
 
-    def get_network_inputs(self, k_test=0, validation_tag=-1, verbosity=1):
+    def get_network_inputs(self, testing_tags=(0), verbosity=1):
         """
          Args:
-             k_test (int): Optional index of subsample for testing with
-                 stratified k-fold cross validation.
-             validation_tag: Optional designation tag for validation data
-             (i.e. not introduced to the network as either training or
-             testing). Defaults to -1.
+             testing_tag (int): Designation tag for testing.
              verbosity (int): Print details if greater than 0.
 
          Returns:
@@ -216,16 +214,13 @@ class PartitionProcessor:
          """
         training_set = []
         testing_set = []
-        validation_set = []
         # 2) Get designation tags for each molecule's fingerprint
         for j, m_name in enumerate(self.m_names):
             if np.any([ignore in m_name for ignore in self.ignore_tags]):
                 pass
-            elif self.part_dict[m_name] == k_test:
+            elif self.part_dict[m_name] in testing_tags:
                 testing_set.append(j)
-            elif self.part_dict[m_name] == validation_tag:
-                validation_set.append(j)
-            else:
+            elif self.part_dict[m_name] >= 0:
                 training_set.append(j)
 
         # 3) Distribute entries to training or testing sets accordingly
@@ -342,7 +337,7 @@ class PartitionProcessor:
                                                energy_dict,
                                                size_dict)
                                    for bin_ in bins])
-        # 2) Monte Carlo to maximize variation within bins and
+        # 2) Iterate to maximize variation within bins and
         #    minimize variation across bins while maintaining bin size
         try:
             while iteration < max_iters:
@@ -415,7 +410,7 @@ class PartitionProcessor:
         organized_entries = []
         sample_bins = {}
         for m_name in sorted(self.m_names):
-            group = m_name.split('.')[0].split('_')[-2]
+            group = self.m_groups[self.m_names.index(m_name)]
             bin_designation = bins_dict[group]
             organized_entries.append([m_name, str(bin_designation)])
             sample_bins[m_name] = bin_designation
@@ -441,14 +436,30 @@ class PartitionProcessor:
         labels = ['k={}'.format(bin_tag) for bin_tag in bins.keys()]
         n_v = len([x for x in bins.keys() if int(x) < 0])
         n_k = n_bins - n_v
-        vcols = plt.cm.Dark2(np.linspace(0, 1, n_v))
-        kcols = plt.cm.rainbow(np.linspace(0, 1, n_k))
-        cols = np.concatenate([vcols, kcols])
+
         vmark = 'x'
         kmark = 'o'
+        holdout = False
+        kfold = False
+        cols = []
+        vcols = []
+        kcols = []
+        if n_v > 1:
+            holdout = True
+            vcols = plt.cm.Dark2(np.linspace(0, 1, n_v))
+            cols = vcols
+            vbins = {key: bins[key] for key in bins.keys() if int(key) < 0}
+        if n_k > 1:
+            kfold = True
+            kcols = plt.cm.rainbow(np.linspace(0, 1, n_k))
+            cols = kcols
+            kbins = {key: bins[key] for key in bins.keys() if int(key) >= 0}
+        if n_k > 1 and n_v > 1:
+            cols = np.concatenate([vcols, kcols])
+
         marks = [vmark] * n_v + [kmark] * n_k
 
-        nnary = len(self.compositions.shape)
+        nnary = len(self.compositions.shape) - self.compositions.shape.count(1)
         print(nnary)
         if nnary == 1:
             # Unary system, plot histogram
@@ -459,16 +470,20 @@ class PartitionProcessor:
                          labels=labels, stacked=False)
             else:
                 # one bar per composition for sparse composition space
-                composition_set = sorted(set(self.compositions))
+                comps = self.compositions.flatten().tolist()
+                composition_set = sorted(set(comps))
                 bars = np.arange(len(composition_set))
-                data = [0 for comp in composition_set]
+                bottom_data = [0 for comp in composition_set]
                 width = 0.35
                 for bin_, col in zip(sorted(bins.keys()), cols):
+                    print(bin_, col)
                     data_new = [bins[bin_].count(comp)
                                 for comp in composition_set]
-                    plt.bar(bars, data_new, width, color=col, bottom=data,
-                            label=bin_)
-                    data = data_new
+
+                    print('bottom:', bottom_data)
+                    plt.bar(bars, data_new, width, color=col,
+                            bottom=bottom_data, label=bin_)
+                    bottom_data = np.add(data_new, bottom_data).tolist()
 
                 plt.ylabel('Samples')
                 plt.xticks(bars, [str(comp) for comp in composition_set])
@@ -476,36 +491,65 @@ class PartitionProcessor:
                 plt.show()
 
         if nnary == 2:
-            x, y = zip(*self.compositions)
-            maxes = [max(x), max(y)]
+            tick_spacing = 2
 
-            fig, axes = plt.subplots(nrows=1, ncols=2)
-            ax0, ax1 = axes.flatten()
-            h = ax0.hist2d(x, y, bins=maxes, norm=LogNorm())
+            if kfold and holdout:
+                fig, axes = plt.subplots(nrows=1, ncols=3)
+                ax0, ax1, ax2 = axes.flatten()
+
+                scatter_compositions(ax1, vbins, '', self.sys_elements,
+                                     cols=kcols)
+                scatter_compositions(ax2, kbins, '', self.sys_elements,
+                                     cols=vcols)
+            elif kfold:
+                fig, axes = plt.subplots(nrows=1, ncols=2)
+                ax0, ax2 = axes.flatten()
+                scatter_compositions(ax2, kbins, '', self.sys_elements,
+                                     cols=kcols)
+            elif holdout:
+                fig, axes = plt.subplots(nrows=1, ncols=2)
+                ax0, ax1 = axes.flatten()
+                scatter_compositions(ax1, vbins, '', self.sys_elements,
+                                     cols=vcols)
+            else:
+                fig, axes = plt.subplots(nrows=1, ncols=1)
+                ax0 = axes.flatten()
+
+            x, y = zip(*self.compositions)
+            maxes = [max(x) + 1, max(y) + 1]
+            h = ax0.hist2d(x, y, bins=maxes,
+                           range=[[0, maxes[0]], [0, maxes[1]]],
+                           norm=LogNorm())
             ax0.set_title('Overall distribution')
             ax0.set_xlabel(self.sys_elements[0])
             ax0.set_ylabel(self.sys_elements[1])
-
-            xos = np.cos(np.linspace(0, 2*np.pi, n_bins)) * 0.1
-            yos = np.sin(np.linspace(0, 2*np.pi, n_bins)) * 0.1
-
-            for (bin_, col, mark,
-                 xo, yo) in zip(sorted(bins.keys()), cols, marks, xos, yos):
-                x, y = zip(*bins[bin_])
-                x = np.add(x, xo)
-                y = np.add(y, yo)
-                ax1.scatter(x, y, s=10, color=col, label=bin_)
-            ax1.legend()
-            ax1.set_title('Distribution by subset')
-            ax1.set_xlabel(self.sys_elements[0])
-            ax1.set_ylabel(self.sys_elements[1])
-
-            try:
-                fig.colorbar(h[3], ax=ax0)
-            except:
-                pass
+            ax0.xaxis.set_major_locator(ticker.MultipleLocator(tick_spacing))
+            ax0.yaxis.set_major_locator(ticker.MultipleLocator(tick_spacing))
+            fig.colorbar(h[3], ax=ax0)
             fig.tight_layout()
             plt.show()
+
+
+def scatter_compositions(ax, bins, title, sys_elements, cols, mark='o'):
+    n_bins = len(bins.keys())
+
+    tick_spacing = 2
+    xos = np.cos(np.linspace(0, 2 * np.pi, n_bins+1))[:-1] * 0.1
+    yos = np.sin(np.linspace(0, 2 * np.pi, n_bins+1)[:-1]) * 0.1
+    for (bin_, col, xo, yo) in zip(sorted(bins.keys()), cols, xos, yos):
+        x, y = zip(*bins[bin_])
+        x = np.add(x, xo)
+        y = np.add(y, yo)
+        ax.scatter(x, y, s=10, color=col, marker=mark, label=bin_)
+    ax.legend()
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(tick_spacing))
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(tick_spacing / 2))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(tick_spacing))
+    ax.yaxis.set_minor_locator(ticker.MultipleLocator(tick_spacing / 2))
+    ax.grid(color='k', which='both')
+    ax.set_title(title)
+    ax.set_xlabel(sys_elements[0])
+    ax.set_ylabel(sys_elements[1])
 
 def mean_energy(bin_, energy_dict, size_dict):
     """
@@ -671,32 +715,3 @@ def pad_fp_by_element(input_data, compositions, final_layers, pad_val=0.0):
         new_input_data.append(np.asarray(data_f))
     return np.asarray(new_input_data)
 
-
-if __name__ == '__main__':
-    description = 'Create preprocessed data file.'
-    argparser = argparse.ArgumentParser(description=description)
-    argparser.add_argument('--settings_file', '-s', default='settings.cfg',
-                           help='Filename of settings.')
-    argparser.add_argument('--verbosity', '-v', default=0,
-                           action='count')
-    argparser.add_argument('--export', '-E', action='store_true',
-                           help='Export entries to csv.')
-    args = argparser.parse_args()
-    settings = SettingsParser('Preprocess').read(args.settings_file)
-    settings['verbosity'] = args.verbosity
-
-    input_name = settings['inputs_name']
-    output_name = settings['outputs_name']
-    sys_elements = settings['sys_elements']
-    partitions_file = settings['partitions_file']
-    split_fraction = settings['split_ratio']
-    kfold = settings['kfold']
-    assert sys_elements != ['None']
-
-    preprocessor = DataPreprocessor(settings)
-    preprocessor.read_fingerprints(input_name)
-    subdivisions = [int(val) for val in settings['subdivisions']]
-    preprocessor.subdivide_by_parameter_set(subdivisions)
-    preprocessor.preprocess_fingerprints()
-    preprocessor.to_file(output_name)
-    preprocessor.generate_partitions(partitions_file, split_fraction, k=kfold)

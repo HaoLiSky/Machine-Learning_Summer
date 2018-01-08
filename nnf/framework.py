@@ -33,7 +33,7 @@ def initialize_argparser():
     argparser.add_argument('action', choices=['Collate', 'Fingerprint',
                                               'Preprocess', 'Partition',
                                               'Network', 'Analyze'])
-    argparser.add_argument('--settings_file', '-s', default='settings.cfg',
+    argparser.add_argument('settings_file', nargs='?', default='settings.cfg',
                            help='Filename of settings.')
     argparser.add_argument('--verbosity', '-v', default=0,
                            action='count')
@@ -41,8 +41,8 @@ def initialize_argparser():
                            help='Export entries to csv.')
     argparser.add_argument('--GridSearch', '-g', action='store_true',
                            help='Initialized grid search with network.')
-    argparser.add_argument('--plot', '-p', action='store_true',
-                           help='Plot and Save figures.')
+    # argparser.add_argument('--plot', '-p', action='store_true',
+    #                        help='Plot and Save figures.')
     argparser.add_argument('--force', '-f', action='store_true',
                            help='Force overwrite/merge. (prompt otherwise)')
     args = argparser.parse_args()
@@ -146,5 +146,5 @@ if __name__ == '__main__':
         evaluator = ModelEvaluator(settings)
         evaluator.model_from_file()
         filenames = evaluator.settings['weights_filenames']
-        evaluator.plot_kfold_predictions(inputs_name, filenames)
+        evaluator.plot_subsample_predictions(inputs_name, filenames)
     print('\n\n{0:.2f}'.format(time.time() - t0), 'seconds elapsed.')
