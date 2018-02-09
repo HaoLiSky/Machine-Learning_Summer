@@ -29,9 +29,15 @@ def readinputs(filename):
     parameters = {}
     lines=f.readlines()
     for line in lines:
-      if line.startswith('#'):
+      if line.startswith('#') or len(line.split()) == 0:
          continue
       fields = line.partition('#')[0].split('=')
+      if fields[1].replace("\n","").strip() == 'True' or 'true':
+         parameters[fields[0].strip()] = True
+         continue
+      if fields[1].replace("\n","").strip() == 'False' or 'false':
+         parameters[fields[0].strip()] = False
+         continue
       parameters[fields[0].strip()]=fields[1].replace("\n","").strip()
     return parameters
 
@@ -52,15 +58,6 @@ def run_md(atoms, md_temperature = 1000*kB, md_step_size = 1*fs, md_steps=100, m
     dyn.attach(md_log, interval=md_interval)
     dyn.run(md_steps)
     return atoms_md, e_log
-    #for debug
-    #dump_atoms(atoms_md, 'md.xyz')
-    #log_e = open('md.log', 'w')
-    #i = 0
-    #for e in e_log:
-    #    log_e.write("%d %15.6f %15.6f\n" %(i, e[0], e[1]))
-    #    i+=1
-    #log_e.close()
-
 
 def opt_structure(atoms, interval, opt_calculator, optimizer):
     atoms.set_calculator(opt_calculator)
