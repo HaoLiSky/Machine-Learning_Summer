@@ -100,8 +100,8 @@ def main():
     md_structures, e_log = run_md(atoms=p1, 
                                   md_temperature = float(paras['md_temperature']) * kB,
                                   md_step_size = float(paras['md_step_size']),
-                                  md_steps= int(float(paras['md_steps'])),
-                                  md_interval= int(float(paras['md_interval']))
+                                  md_steps= int(paras['md_steps']),
+                                  md_interval= int(paras['md_interval'])
                                   )
     logfile = open(paras['output_file'], 'w')
     numb_structure = int(float(paras['record_frequency']))
