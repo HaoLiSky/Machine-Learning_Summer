@@ -32,10 +32,10 @@ def readinputs(filename):
       if line.startswith('#') or len(line.split()) == 0:
          continue
       fields = line.partition('#')[0].split('=')
-      if fields[1].replace("\n","").strip() == 'True' or 'true':
+      if fields[1].replace("\n","").strip() in ['True','true']:
          parameters[fields[0].strip()] = True
          continue
-      if fields[1].replace("\n","").strip() == 'False' or 'false':
+      if fields[1].replace("\n","").strip() in ['False','false']:
          parameters[fields[0].strip()] = False
          continue
       parameters[fields[0].strip()]=fields[1].replace("\n","").strip()
