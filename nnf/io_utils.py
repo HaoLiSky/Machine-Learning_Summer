@@ -116,6 +116,30 @@ def read_from_group(h5f, group_path):
 
     return dict_attrs, dict_dsets
 
+#store neural network parameters without bias
+def store_nn_paras(weights, filename='nn_paras.csv', n_hidden_layer=None,n_neural=None):
+    i = 0
+    with open(filename, "a") as nn_paras_file:
+         for weight in weights:
+            i+=1   
+            np.savetxt(nn_paras_file, weight, fmt='%.8f', delimiter='  ', header='layer_'+str(i))
+
+#load neural network parameters from file
+def load_nn_paras(filename='nn_paras.csv'):
+    nn_paras_file = open(filename,'r')
+    nn_paras = {}
+    while True:
+       line = nn_paras_file.readline()
+       if not line:
+          break
+       if line.startswith("#"):
+          curr_key = line.split()[1]
+          nn_paras[curr_key] = []
+          continue
+       nn_paras[curr_key].append([float(field) for field in line.split()])
+    for key in nn_paras:
+       nn_paras[key] = np.array(nn_paras[key])
+    return nn_paras
 
 def write_to_group(h5f, group_path, dict_attrs, dict_dsets,
                    dset_types={}, **kwargs):

@@ -8,7 +8,7 @@ import tensorflow as tf
 import numpy as np
 from keras.callbacks import Callback
 from keras.engine.topology import Layer
-
+from keras.utils.generic_utils import get_custom_objects
 
 def rmse_loss(y_true, y_pred):
     return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
@@ -25,6 +25,8 @@ def mean_diff(y_true, y_pred):
 def mean_pred(y_true, y_pred):
     return K.mean(y_pred)
 
+def custom_sigmoid(x):
+    return (K.sigmoid(x)) - 0.5    #to make sure the padding zero inputs can also output zero after the calculations in activations#
 
 class endmask(Layer):
     def __init__(self, **kwargs):

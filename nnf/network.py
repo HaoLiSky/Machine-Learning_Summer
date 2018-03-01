@@ -6,25 +6,28 @@ import argparse
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 import numpy as np
+import math
 from time import time
 from datetime import datetime
 from itertools import product
 from keras.models import Model
+from keras import initializers
 from keras.layers import Input, Dense, Add, Dropout, Multiply
 from keras.layers import ActivityRegularization
 from keras.optimizers import Nadam, Adadelta, Adam, SGD
 from keras.callbacks import ModelCheckpoint, EarlyStopping
 from keras.callbacks import TerminateOnNaN
 from nnf.io_utils import generate_tag, SettingsParser
-from nnf.custom_keras_utils import spread, mean_pred, LossTracking, rmse_loss
+from nnf.custom_keras_utils import spread, mean_pred, LossTracking, rmse_loss, custom_sigmoid
 from nnf.batch_preprocess import PartitionProcessor
+from nnf.io_utils import store_nn_paras
 
 activation_list = ['softplus',
                    'relu',
                    'tanh',
                    'sigmoid',
                    'softplus']
-optimizer_list = [SGD(lr=0.1, decay=0.001,
+optimizer_list = [SGD(lr=0.001, decay=0.001,
                       momentum=0.9, nesterov=True),
                   Adam(),
                   Nadam(),
@@ -82,7 +85,9 @@ def element_model(element, input_vector_length, n_hlayers, dense_units,
     h_layer = input_layer
     for i in range(n_hlayers):
         # stack hidden layers
-        h_layer = Dense(dense_units, activation=activation,
+        h_layer = Dense(dense_units, activation=custom_sigmoid,
+                        kernel_initializer = initializers.TruncatedNormal(mean=0.0, stddev=0.05, seed=None),
+                        use_bias = False,
                         name='{}_hidden_{}'.format(element, i))(h_layer)
         if l1 > 0 or l2 > 0:
             h_layer = ActivityRegularization(
@@ -92,6 +97,7 @@ def element_model(element, input_vector_length, n_hlayers, dense_units,
                     dropout, name='{}_dropout_{}'.format(element, i))(h_layer)
 
     output_layer = Dense(1,
+                         use_bias = False,
                          name='{}_Ei'.format(element))(h_layer)
 
     model = Model(input_layer, output_layer,
@@ -134,12 +140,12 @@ def structure_model(input_vector_length, count_per_element, sys_elements,
 
     total_energy_output = Add(name='E_tot')(structure_output_lanes)
 
-    # model = Model(inputs=structure_input_lanes,
-    #               outputs=total_energy_output)
+    #model = Model(inputs=structure_input_lanes,
+    #              outputs=total_energy_output)
 
     n_atoms_input = Input(shape=(1,), name='1/atoms')
     structure_input_lanes.append(n_atoms_input)
-    avg_output = Multiply()([n_atoms_input, total_energy_output])
+    avg_output = Multiply()([n_atoms_input, total_energy_output])         #set the output as the energy per atom (not the total energy!)#
     # masked_output = endmask(name='{}_mask'.format(name))(avg_output)
     # # Sum up atomic energies
 
@@ -161,6 +167,7 @@ class Network:
         self.final_weights_name = 'w{}.h5'
         self.verbosity = self.settings['verbosity']
         self.record = self.settings['record']
+        self.model = None
 
     def load_data(self, filename, part_file, run_settings):
         """
@@ -198,8 +205,8 @@ class Network:
         input_vector_length = self.train['inputs'].shape[-1]
         epochs = run_settings['epochs']
         batch_size = run_settings['batch_size']
-        n_hlayers = run_settings['h']
-        dense_units = run_settings['d']
+        n_hlayers = run_settings['hiddenlayer']
+        dense_units = run_settings['hiddenneuron']
         activation = activation_list[run_settings['activation']]
         dropout = run_settings['dropout']
         l1 = run_settings['l1']
@@ -241,9 +248,9 @@ class Network:
                                             .astype(float)))
         # 4) ensure model does not return infinity or NaN values
         # if so, there is, most likely, a problem with the input data
-        untrained_sample = model.predict(training_inputs)
-        assert not np.any(np.isnan(untrained_sample))
-        assert not np.any(np.isinf(untrained_sample))
+        #untrained_sample = model.predict(training_inputs)
+        #assert not np.any(np.isnan(untrained_sample))
+        #assert not np.any(np.isinf(untrained_sample))
         # 5) define Keras callbacks that run alongside training
         history = LossTracking()
         nan_check = TerminateOnNaN()
@@ -257,7 +264,7 @@ class Network:
                                            period=save_period,
                                            save_best_only=save_best)
             callbacks.append(checkpointer)
-        # 6) load weights from previous runs if allowed
+        # 6) load weights from previous runs if allow
         if os.path.isfile(self.checkpoint_name.format(tag)) and allow_restart:
             print('Loaded previous run.')
             model.load_weights(self.checkpoint_name.format(tag))
@@ -265,9 +272,9 @@ class Network:
         print('\n', ' ' * 9,
               'Training'.center(29), '|  ', 'Testing'.center(29))
         print('Epoch'.ljust(7),
-              'rmse'.rjust(9), 'mean pred'.rjust(9), 'spread'.rjust(9),
+              'rmse/meV'.rjust(9), 'mean-pred/meV'.rjust(9), 'spread/meV'.rjust(9),
               '   |',
-              'rmse'.rjust(9), 'mean pred'.rjust(9), 'spread'.rjust(9))
+              'rmse/meV'.rjust(9), 'mean-pred/meV'.rjust(9), 'spread/meV'.rjust(9), '\n')
         try:
             model.fit(training_inputs, self.train['outputs'],
                       epochs=epochs, verbose=0,
@@ -275,6 +282,53 @@ class Network:
                                        self.test['outputs']),
                       batch_size=batch_size,
                       callbacks=callbacks)
+            #summary = model.summary()
+            #print(summary)
+            store_nn_paras(weights=model.get_weights())
+            print(model.get_weights())
+
+            #first_weights = weights[0]    #reminder: this is 2D array#
+            #input_number = len(weights[0])
+            #hidden_neuron_number = len(weights[0][0])
+
+            #second_weights = weights[2]   #reminder: this is 1D array#
+            #first_bias = weights[1]       #reminder: this is 2D array#
+            #second_bias = weights[3]      #reminder: this is 1D array#
+            
+            #np.savetxt('first_weights.csv', first_weights, delimiter = ',')  
+            #np.savetxt('second_weights.csv', second_weights, delimiter = ',')
+            #np.savetxt('first_bias.csv', first_bias, delimiter = ',')
+            #np.savetxt('second_bias.csv', second_bias, delimiter = ',')
+
+            #G_weights_sum = []
+ 
+            #for i in range(0, hidden_neuron_number):
+            
+             #         G_weights_sum.append(np.sum(np.multiply(G, first_weights[:,i])))
+                        
+            #fianl_output = []
+
+
+            #for i in range(0, hidden_neuron_number):
+
+             #         final_output[i] = second_weights[i] * (1 / (1+ math.exp(G_weights_sum[i] + first_bias[i])))
+         
+            #sum_of_all_terms = np.sum(final_output)
+
+            #energy_per_atom = sum_of_all_terms + second_bias
+
+            #print(first_weights)
+            #print(second_weights)
+            #print(first_bias)
+            #print(second_bias)
+            #print('number of input: ', input_number)
+            #print('number of hidden neuron: ', hidden_neuron_number) 
+
+
+
+            #print(weighttest)
+            #print(realbias)
+
         except (KeyboardInterrupt, SystemExit):
             print('\n')
         # 8) record weights and history of losses
@@ -287,6 +341,8 @@ class Network:
                        delimiter=',', newline=';\n')
         return test_hist[-1]
 
+    #write nn model parameters (weights and bias) to file.
+        
     def grid_search(self, settings_file, filename):
         """
         Grid search for parameters/hyperparameters using network.
@@ -351,5 +407,6 @@ if __name__ == '__main__':
         network.load_data(input_name, partitions_file, settings)
         final_loss = network.train_network(settings)
         print('Final loss:', final_loss)
+        print(model.save_weights(self.final_weights_name.format(tag)))       
 
 
