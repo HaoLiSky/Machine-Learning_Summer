@@ -1,8 +1,8 @@
 import unittest
 import numpy as np
-from scipy.misc import comb
+from scipy.special import comb
 from ase.build import bulk
-from nnf.fingerprints import represent_BP, build_supercell
+from fingerprints import represent_BP, build_supercell
 
 
 class Test_Gs(unittest.TestCase):
@@ -14,6 +14,7 @@ class Test_Gs(unittest.TestCase):
     def test_G1shape(self):
         
         """
+        test shape of G1 array = # atoms x # unique element types x # descriptors
         """
 
         num_elements = len(np.unique(self.elements))
@@ -26,6 +27,7 @@ class Test_Gs(unittest.TestCase):
     def test_G2shape(self):
         
         """
+        test shape of G2 array = # atoms x # unique element type pairs x # descriptors
         """
 
         num_elements = len(np.unique(self.elements))
@@ -38,6 +40,7 @@ class Test_Gs(unittest.TestCase):
     def test_G1values(self):
         
         """
+        test values of G1 computed by code vs. evaluated by hand for simple toy system
         """
 
         if self.toy:
@@ -50,6 +53,7 @@ class Test_Gs(unittest.TestCase):
     def test_G2values(self):
         
         """
+        test values of G2 computed by code vs. evaluated by hand for simple toy system
         """
 
         if self.toy:
@@ -68,6 +72,7 @@ class Test_dGs(unittest.TestCase):
     def test_dG1shape(self):
         
         """
+        test shape of dG1 array = # atoms x # atoms x # cart directions(3) x # unique element types x # descriptors
         """
         
         num_elements = len(np.unique(self.elements))
@@ -82,6 +87,7 @@ class Test_dGs(unittest.TestCase):
     def test_dG2shape(self):
         
         """
+        test shape of dG2 array = # atoms x # atoms x # cart directions(3) x # unique element type pairs x # descriptors
         """
         
         num_elements = len(np.unique(self.elements))
@@ -96,6 +102,7 @@ class Test_dGs(unittest.TestCase):
     def test_dG1_fd(self):
          
         """
+        test values of analytical dG1 computed by code vs. dG1 from finite differences
         """
         
         disp = 1E-04
@@ -115,6 +122,7 @@ class Test_dGs(unittest.TestCase):
     def test_dG2_fd(self):
          
         """
+        test values of analytical dG2 computed by code vs. dG2 from finite differences
         """
         
         disp = 1E-04
@@ -162,7 +170,7 @@ class toy_molecule(Test_Gs,Test_dGs):
 
 class toy_periodic(Test_Gs,Test_dGs):
 
-    @classmethod
+    @classmethod  ## use class method to avoid calling setUp over and over again for every TestCase
     def setUpClass(cls):
         
         unitcell = bulk('Cu','fcc',a=4.078,cubic=True)
@@ -193,10 +201,10 @@ class toy_periodic(Test_Gs,Test_dGs):
         
 if __name__ == '__main__':
 
-
     suite1 = unittest.TestLoader().loadTestsFromTestCase(toy_molecule) 
     unittest.TextTestRunner(verbosity=2).run(suite1)
     
     suite2 = unittest.TestLoader().loadTestsFromTestCase(toy_periodic) 
     unittest.TextTestRunner(verbosity=2).run(suite2)
+    
     

@@ -1,5 +1,4 @@
 import numpy, time
-from scipy import sparse
 #from numba import jit
 
 class BehlerParrinello():
@@ -65,7 +64,7 @@ class BehlerParrinello():
         """
         A cutoff function:
     
-            f_{R_{c}}(R_{ij}) = \begin{cases}
+            f_{c}(R_{ij}) = \begin{cases}
                 0.5 ( \cos( \frac{\pi R_{ij}}{R_c} ) + 1 ), & R_{ij} \le R_c \\
                 0,  & otherwise
             \end{cases}
@@ -219,9 +218,10 @@ class BehlerParrinello():
         
         """
         Computes the derivative of the norm of the position vector R_{ij}
-        with respect to cartesian direction l of atom m.
+        with respect to cartesian direction l of atom m:
     
-        See Eq. 14c of the supplementary information of Khorshidi, Peterson, CPC(2016).
+            \frac{\partial R_{ij}}{\partial R_{m,l}} = 
+                (\delta_{mj} - \delta_{mi}) (\frac{R_{j,l} - R_{i,l}}{R_{ij}})
     
         Parameters
         ----------
@@ -259,6 +259,10 @@ class BehlerParrinello():
 
         """
         Sum of Rij.(dRij/dRml) terms:
+            
+            R_{ij} \frac{\partial R_{ij}}{\partial R_{m,l}} +
+            R_{ik} \frac{\partial R_{ik}}{\partial R_{m,l}} +
+            R_{jk} \frac{\partial R_{jk}}{\partial R_{m,l}}
     
         Parameters
         ----------
@@ -284,8 +288,13 @@ class BehlerParrinello():
         """
         The derivative of the cutoff function
         with respect to cartesian direction l of atom m:
-    
             
+            \frac{\partial f_{c}(R_{ij})}{\partial R_{m,l}} = \begin{cases}
+               -0.5 \frac{\pi}{R_c} \sin(\frac{\pi R_{ij}}{R_c}) 
+                    \frac{\partial R_{ij}}{\partial R_{m,l}}, & R_{ij} \le R_c \\
+                0, & otherwise
+            \end{cases}
+           
         Parameters
         ----------
         R : array, shape=(N_atoms, N_atoms)
@@ -311,7 +320,10 @@ class BehlerParrinello():
 
         """
         Sum of (1/fc).(dfc/dRml) terms:
-    
+            
+            \frac{1}{f_c(R_{ij})} \frac{\partial f_c(R_{ij})}{\partial R_{m,l}} +
+            \frac{1}{f_c(R_{ik})} \frac{\partial f_c(R_{ik})}{\partial R_{m,l}} + 
+            \frac{1}{f_c(R_{jk})} \frac{\partial f_c(R_{jk})}{\partial R_{m,l}}  
             
         Parameters
         ----------
@@ -358,7 +370,7 @@ class BehlerParrinello():
         Returns
         -------
         dcosTheta : array, shape=(N_centralatoms, N_atoms, N_atoms, N_centralatoms, 3)
-                         The derivatives of the cosines of triplet angles.
+                    The derivatives of the cosines of triplet angles.
         
         """
         
@@ -435,8 +447,10 @@ class BehlerParrinello():
 
         Parameters
         ----------
-        Rij_dRij_dRml_sum: 
-        fcinv_dfc_dRml_sum:
+        Rij_dRij_dRml_sum: array, shape=(N_atoms, N_atoms, N_atoms, N_centralatoms, 3)
+                           Sum of Rij.(dRij/dRml) terms.
+        fcinv_dfc_dRml_sum: array, shape=(N_atoms, N_atoms, N_atoms, N_centralatoms, 3)
+                            Sum of (1/fc).(dfc/dRml) terms.
         cosTheta: array, shape=(N_centralatoms, N_atoms, N_atoms)
                   An array of cosines of triplet angles.
         dcosTheta_dRml: array, shape=(N_centralatoms, N_atoms, N_atoms, N_centralatoms, 3)
@@ -467,9 +481,9 @@ class BehlerParrinello():
             
             if ele1 != ele2:
                 ## double the sum over pairs of (ele1,ele2) and (ele2,ele1)
-                dG2.append(2*(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1)))
+                dG2.append(2*(values[:, [[i] for i in idxj], idxk,:,:].sum(axis=2).sum(axis=1)))
             else:    
-                dG2.append(values[:, [[i] for i in idxj], idxk].sum(axis=2).sum(axis=1))
+                dG2.append(values[:, [[i] for i in idxj], idxk,:,:].sum(axis=2).sum(axis=1))
 
         return dG2
     

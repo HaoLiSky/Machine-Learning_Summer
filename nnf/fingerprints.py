@@ -108,7 +108,7 @@ def build_supercell(unitcell, R_c):
                           supercell.get_chemical_symbols()]
 
     # sort atoms so that atoms in the original unitcell are listed first in
-    #  the supercell
+    # the supercell
     # and trim away atoms that are not within cutiff distance of any atoms
     # in the unitcell
     coords, elements = [unitcell.get_positions().tolist(),
@@ -120,7 +120,7 @@ def build_supercell(unitcell, R_c):
             continue
         elif np.any(np.less_equal(R[:, j], R_c)):
             # if atom is within cutoff distance of an atom in the unitcell,
-            #  add to the list
+            # add to the list
             coords.append(coords1[j])
             elements.append(elements1[j])
 
@@ -185,30 +185,31 @@ def represent_BP(coords, elements, sys_elements, parameters=None,
         bp._N_unitcell = N_unitcell
     else:
         bp._N_unitcell = len(coords)
-    #   print (N_unitcell,len(coords))
 
     # quantities which are only computed once for every structure
-    # if r_c is fixed, then we can compute the cutoff functions here as
-    # well...
+    # if r_c is fixed, then we can compute the cutoff functions here
     R = cdist(coords, coords)
     fc = bp.fc(R)
-    cosTheta = bp.cosTheta(coords, R, periodic=periodic)
-    G1s, G2s = [], []
+    if len(para_pairs) > 0:
+        G1s = []
+    if len(para_triplets) > 0:    
+        cosTheta = bp.cosTheta(coords, R, periodic = periodic)
+        G2s = []
 
     if derivs:
-        dRij_dRml, Rij_dRij_dRml = bp.dRij_dRml(coords, R, periodic=periodic)
-        Rij_dRij_dRml_sum = bp.Rij_dRij_dRml_sum(Rij_dRij_dRml)
+        dRij_dRml, Rij_dRij_dRml = bp.dRij_dRml(coords, R, periodic = periodic)
         dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
-        fcinv_dfc_dRml_sum = bp.fcinv_dfc_dRml_sum(fc, dfc_dRml)
-        dcosTheta_dRml = bp.dcosTheta_dRml(coords, R, dRij_dRml, cosTheta,
-                                           periodic=periodic)
-        dG1s, dG2s = [], []
+        if len(para_pairs) > 0:
+            dG1s = []
+        if len(para_triplets) > 0:    
+            Rij_dRij_dRml_sum = bp.Rij_dRij_dRml_sum(Rij_dRij_dRml)
+            fcinv_dfc_dRml_sum = bp.fcinv_dfc_dRml_sum(fc, dfc_dRml)
+            dcosTheta_dRml = bp.dcosTheta_dRml(coords, R, dRij_dRml, cosTheta, periodic = periodic)
+            dG2s = []
 
     # loops over different sets of parameters
     for para in para_pairs:
         bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-        #        fc = bp.fc(R)
-        #        dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
         G1s.append(bp.G1(R, fc, periodic=periodic))
         if derivs:
             dG1s.append(bp.dG1_dRml(R, dRij_dRml, fc, dfc_dRml,
@@ -216,9 +217,6 @@ def represent_BP(coords, elements, sys_elements, parameters=None,
 
     for para in para_triplets:
         bp.r_cut, bp.r_s, bp.eta, bp.zeta, bp.lambda_ = para
-        #        fc = bp.fc(R)
-        #        dfc_dRml = bp.dfc_dRml(R, dRij_dRml)
-        #        fcinv_dfc_dRml_sum = bp.fcinv_dfc_dRml_sum(fc, dfc_dRml)
         G2, G2vals = bp.G2(R, fc, cosTheta, periodic=periodic)
         G2s.append(G2)
         if derivs:
@@ -226,13 +224,28 @@ def represent_BP(coords, elements, sys_elements, parameters=None,
                                     cosTheta, dcosTheta_dRml, G2vals,
                                     periodic=periodic))
 
-    fingerprints = [np.transpose(np.array(G1s), [2, 1, 0]),
-                    np.transpose(np.array(G2s), [2, 1, 0])]
+    # reshaping arrays
+    if len(para_pairs) > 0:
+        G1s_new = np.transpose(np.array(G1s), [2, 1, 0])
+        if derivs:
+            dG1s_new = np.transpose(np.array(dG1s), [2, 3, 4, 1, 0])
+    else:
+        G1s_new = None
+        dG1s_new = None
+        
+    if len(para_triplets) > 0:
+        G2s_new = np.transpose(np.array(G2s), [2, 1, 0])
+        if derivs:
+            dG2s_new = np.transpose(np.array(dG2s), [2, 3, 4, 1, 0])
+    else:
+        G2s_new = None
+        dG2s_new = None
+
+    fingerprints = [G1s_new, G2s_new]
     interaction_dims = [1, 2]
 
     if derivs:
-        fingerprints += [np.transpose(np.array(dG1s), [2, 3, 4, 1, 0]),
-                         np.transpose(np.array(dG2s), [2, 3, 4, 1, 0])]
+        fingerprints += [dG1s_new, dG2s_new]
         interaction_dims += [1, 2]
 
     return fingerprints, interaction_dims
