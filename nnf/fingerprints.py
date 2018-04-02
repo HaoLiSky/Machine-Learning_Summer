@@ -72,7 +72,7 @@ def bp_fingerprint(mol, parameters, sys_elements, derivs=False):
     if derivs:
         labels += ['dG_1', 'dG_2']
     fingerprints = zip(labels, data)
-    return fingerprints, [x.shape for x in data]
+    return fingerprints, [x.shape if x is not None else 0 for x in data]
 
 
 def build_supercell(unitcell, R_c):
@@ -283,9 +283,11 @@ def pad_fingerprints_by_interaction(terms, symbol_set,
     pad_widths = [[(0, 0)] * (len(term.shape) - 2)
                   + [(padding, 0)]  # only pad alpha dimension
                   + [(0, 0)]
+                  if term is not None else None
                   for term, padding in zip(terms, group_deltas)]
 
     padded = [np.pad(np.zeros(data.shape), pad_width, 'edge')
+              if pad_width is not None else None
               for data, pad_width in zip(terms, pad_widths)]
 
     content_slices = [[sys_group.index(group) for group in m_group]
@@ -293,6 +295,7 @@ def pad_fingerprints_by_interaction(terms, symbol_set,
 
     for dim, content_indices in enumerate(content_slices):
         for m_index, sys_index in enumerate(content_indices):
-            padded[dim][..., sys_index, :] = terms[dim][..., m_index, :]
+            if padded[dim] is not None:
+                padded[dim][..., sys_index, :] = terms[dim][..., m_index, :]
 
     return padded

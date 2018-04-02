@@ -48,7 +48,8 @@ class Fingerprint:
         else:
             raise ValueError
 
-        self.dsets_dict = {label: term for label, term in inputs}
+        self.dsets_dict = {label: term for label, term in inputs
+                           if term is not None}
         self.attrs_dict = {'natoms'        : mol.natoms,
                            'element_set'   : np.string_(mol.element_set),
                            'element_counts': mol.element_counts,
