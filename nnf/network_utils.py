@@ -4,7 +4,7 @@
 import os
 import h5py
 import numpy as np
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 from keras.utils import plot_model
@@ -41,7 +41,7 @@ class ModelEvaluator:
         else:
             self.ignore_tags = []
 
-    def plot_subsample_predictions(self, filename, weights_filename):
+    def plot_subsample_predictions(self, filename, weights_files):
         libver = self.settings['libver']
         k_test = self.settings['validation_ind']
         partitions_file = self.settings['partitions_file']
@@ -55,7 +55,6 @@ class ModelEvaluator:
                             for name in h5f['preprocessed/m_names'][()]]
         predictions = []
 
-        self.model.load_weights(weights_filename[0])
         use_set = []
         for j, m_name in enumerate(self.m_names):
             if not np.any([ign in m_name for ign in self.ignore_tags]):
@@ -67,27 +66,38 @@ class ModelEvaluator:
         inputs = [atom for atom in inputs]
         sizes = np.take(self.sizes, use_set, axis=0)
         inputs.append(np.reciprocal(np.asarray(sizes).astype(float)))
-        pred = self.model.predict(inputs)
-        try:
-            predictions.append(pred.flatten().tolist())
-        except AttributeError:
-            predictions.append(pred)
 
-        predictions_average = np.mean(predictions, axis=0)
-        diff = np.subtract(actuals, predictions_average)
-        rmse = np.sqrt(np.mean(diff)**2)
-        print('RMSE:', rmse)
-        sstot = np.mean(actuals)
-        ssres = np.sum(diff**2)
+        for w in weights_files:
+            self.model.load_weights(w)
+            pred = self.model.predict(inputs)
+            try:
+                predictions.append(pred.flatten().tolist())
+            except AttributeError:
+                predictions.append(pred)
+
+        predictions_avg = np.mean(predictions, axis=0)
+        grand_mean = np.mean(actuals)
+        diff = np.subtract(actuals, predictions_avg)
+        rmse = np.sqrt(np.mean(diff**2))
+
+        sstot = np.sum(np.subtract(actuals, grand_mean)**2)
+        ssres = np.sum(np.subtract(actuals, predictions_avg)**2)
         r2 = 1 - np.divide(ssres, sstot)
+
+        print('{} samples to test.'.format(len(use_set)))
+        print('RMSE:', rmse)
         print('R-squared:', r2)
 
+        # r2adj = 1 - (1 - r2)*(len(use_set) - 1)/(len(use_set)-2)
+        # print('R-squared adjusted:', r2adj)
+
         plt.plot(actuals, actuals, color='k')
-        plt.scatter(actuals, predictions_average,
+        plt.scatter(actuals, predictions_avg,
                     s=5, color='r')
-        plt.title('Predicted vs. Actual Energy')
-        plt.ylabel('Predicted (meV)')
-        plt.xlabel('Actual (meV)')
+        plt.title('NNP Validation')
+        plt.ylabel('Predicted Energy (meV)')
+        plt.xlabel('Actual Energy(meV)')
+        plt.axis('equal')
         plt.show()
 
     def plot_kfold_predictions(self, filename, weights_filenames):

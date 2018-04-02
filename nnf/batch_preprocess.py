@@ -5,10 +5,10 @@ import os
 import argparse
 import h5py
 import numpy as np
-#import sklearn.preprocessing as skp
-#import matplotlib.pyplot as plt
-#import matplotlib.ticker as ticker
-#from matplotlib.colors import LogNorm
+import sklearn.preprocessing as skp
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+from matplotlib.colors import LogNorm
 from itertools import combinations_with_replacement
 from nnf.io_utils import slice_from_str, read_from_group, write_to_group
 from nnf.io_utils import SettingsParser
@@ -607,10 +607,10 @@ def normalize_to_vectors(unprocessed_data, Alpha):
         st_max = np.min(fp_as_grid, axis=0)                                    #max#
         st_mean = np.mean(fp_as_grid, axis=0)
         standards.append(np.stack([st_min, st_max, st_mean], axis=0))
-        #normalized_grid = skp.normalize(fp_as_grid, axis=0, norm='max')
-        normalized_grid = (fp_as_grid - st_min) / (st_max - st_min)            #normalize equation#
-        for_calculator = [st_min, st_max]
-        np.savetxt('max_min_value.csv',for_calculator,delimiter=',')          
+        normalized_grid = skp.robust_scale(fp_as_grid)
+        #normalized_grid = (fp_as_grid - st_min) / (st_max - st_min)            #normalize equation#
+        #for_calculator = [st_min, st_max]
+        #np.savetxt('max_min_value.csv',for_calculator,delimiter=',')
 
         print('alpha={}'.format(alpha),
               '  min=', np.amin(normalized_grid),

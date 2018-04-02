@@ -43,7 +43,7 @@ class LossTracking(Callback):
         self.test_losses = []
         self.train_losses = []
         self.logs = {}
-        self.patience = 50
+        self.patience = 1000
         self.overfit_steps = 0
         self.threshold = 0.9
         self.best_val_loss = np.inf
